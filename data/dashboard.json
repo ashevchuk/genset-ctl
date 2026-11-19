@@ -1,0 +1,1771 @@
+{
+  "dashboard": {
+    "nav": [
+      { "href": "/", "label": "Dashboard" },
+      { "href": "/journal", "label": "Journal" },
+      { "href": "/wifi-config", "label": "Settings" },
+      { "href": "/fw", "label": "Firmware" },
+      { "href": "/files", "label": "Files" }
+    ],
+    "cards": [
+      { "id": "TIME", "label": "Timestamp" },
+      { "id": "UPTIME", "label": "Uptime" },
+      { "id": "ENGINE_HOURS", "label": "Engine hours" },
+      { "id": "RESET_REASON", "label": "Reset reason" },
+      { "id": "BUILD_TIME", "label": "Build" }
+    ],
+    "switches": [
+      {
+        "name": "Choke",
+        "label": "Choke",
+        "command": {
+          "on": "0",
+          "off": "0"
+        }
+      },
+      {
+        "name": "Fuel_pump",
+        "label": "Fuel pump",
+        "command": {
+          "on": "1",
+          "off": "1"
+        }
+      },
+      {
+        "name": "Enable_battery",
+        "label": "Enable battery",
+        "command": {
+          "on": "8",
+          "off": "8"
+        }
+      },
+      {
+        "name": "Disable_battery",
+        "label": "Disable battery",
+        "command": {
+          "on": "9",
+          "off": "9"
+        }
+      },
+      {
+        "name": "Ignition",
+        "label": "Ignition kill",
+        "command": {
+          "on": "10",
+          "off": "10"
+        }
+      },
+      {
+        "name": "ECO",
+        "label": "ECO mode",
+        "command": {
+          "on": "12",
+          "off": "12"
+        }
+      },
+      {
+        "name": "Load_switch",
+        "label": "Load switch",
+        "command": {
+          "on": "13",
+          "off": "13"
+        }
+      },
+      {
+        "name": "Charger",
+        "label": "Charger",
+        "command": {
+          "on": "14",
+          "off": "14"
+        }
+      },
+      {
+        "name": "run",
+        "label": "Start once",
+        "command": {
+          "on": "stop",
+          "off": "start"
+        }
+      },
+      {
+        "name": "run",
+        "label": "Start retry",
+        "command": {
+          "on": "stop",
+          "off": "start_retry"
+        }
+      },
+      {
+        "name": "stop",
+        "label": "Stop",
+        "command": {
+          "on": "stop",
+          "off": "stop"
+        }
+      }
+    ],
+    "inputs": [
+      {
+        "name": "Oil",
+        "label": "Oil",
+        "type": "alarm"
+      },
+      {
+        "name": "Overload",
+        "label": "Overload",
+        "type": "alarm"
+      },
+      {
+        "name": "Overheat",
+        "label": "Overheat",
+        "type": "alarm"
+      },
+      {
+        "name": "Output",
+        "label": "Output"
+      },
+      {
+        "name": "Generator_sense",
+        "label": "Generator"
+      },
+      {
+        "name": "Battery_sense",
+        "label": "Battery"
+      },
+      {
+        "name": "PSU_sense",
+        "label": "Power"
+      }
+    ],
+    "charts": [
+      {
+        "name": "HEAD_TEMP",
+        "label": {
+          "class": "temp"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 300,
+          "zones": [
+            {
+              "min": 300,
+              "color": "#ff6b6b"
+            },
+            {
+              "min": 0,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "line",
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Engine",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "rgb(0, 128, 0)",
+                "borderColor": "rgb(0, 200, 0)",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 30
+              }
+            }
+          }
+        },
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Engine"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  300
+                ],
+                "backgroundColor": [
+                  "rgb(0, 200, 0)",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "ADC0_0",
+        "label": {
+          "class": "temp"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 150,
+          "zones": [
+            {
+              "min": 150,
+              "color": "#ff6b6b"
+            },
+            {
+              "min": 0,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "line",
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Oil",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "rgb(0, 128, 0)",
+                "borderColor": "rgb(0, 200, 0)",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 30
+              }
+            }
+          }
+        },
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Oil"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  150
+                ],
+                "backgroundColor": [
+                  "rgb(0, 200, 0)",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "ADC0_2",
+        "label": {
+          "class": "temp"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 80,
+          "zones": [
+            {
+              "min": 80,
+              "color": "#ff6b6b"
+            },
+            {
+              "min": 0,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "line",
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Inverter",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "rgb(0, 128, 0)",
+                "borderColor": "rgb(0, 200, 0)",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 30
+              }
+            }
+          }
+        },
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Inverter"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  80
+                ],
+                "backgroundColor": [
+                  "rgb(0, 200, 0)",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "ADC0_3",
+        "label": {
+          "class": "temp"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 100,
+          "zones": [
+            {
+              "min": 75,
+              "color": "#ff6b6b"
+            },
+            {
+              "min": 0,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "line",
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Generator",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "rgb(0, 128, 0)",
+                "borderColor": "rgb(0, 200, 0)",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 30
+              }
+            }
+          }
+        },
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Generator"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  100
+                ],
+                "backgroundColor": [
+                  "rgb(0, 200, 0)",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "ADC0_1",
+        "label": {
+          "class": "temp"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": -20,
+          "max": 55,
+          "zones": [
+            {
+              "min": 45,
+              "color": "#ff6b6b"
+            },
+            {
+              "min": 35,
+              "color": "#e6b800"
+            },
+            {
+              "min": 10,
+              "color": "#00c508"
+            },
+            {
+              "min": 0,
+              "color": "#22d3ee"
+            },
+            {
+              "min": -20,
+              "color": "#3b82f6"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Air"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  75
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Air",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "rgb(0, 128, 0)",
+                "borderColor": "rgb(0, 200, 0)",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": -20,
+                "suggestedMax": 55
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "RPM",
+        "label": {
+          "class": "rpm"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 6000,
+          "zones": [
+            {
+              "min": 3000,
+              "color": "#ff6b6b"
+            },
+            {
+              "min": 0,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "RPM"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  6000
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "RPM",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 6000
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "ADC1_0",
+        "label": {
+          "class": "level"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 8.65,
+          "zones": [
+            {
+              "min": 1.73,
+              "color": "#00c508"
+            },
+            {
+              "min": 0,
+              "color": "#ff6b6b"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Fuel"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  8.65
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Fuel",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 8.65
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "ADC1_1",
+        "label": {
+          "class": "volt"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 9,
+          "max": 14.5,
+          "zones": [
+            {
+              "min": 11.8,
+              "color": "#00c508"
+            },
+            {
+              "min": 10,
+              "color": "#e6b800"
+            },
+            {
+              "min": 9,
+              "color": "#ff6b6b"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Battery"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  5.5
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Battery",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 9,
+                "suggestedMax": 14.5
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "RSSI",
+        "label": {
+          "class": "rssi"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": -100,
+          "max": 0,
+          "zones": [
+            {
+              "min": -67,
+              "color": "#00c508"
+            },
+            {
+              "min": -80,
+              "color": "#e6b800"
+            },
+            {
+              "min": -100,
+              "color": "#ff6b6b"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "RSSI"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  100
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "RSSI",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": -100,
+                "suggestedMax": 0
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "VRMS",
+        "label": {
+          "class": "volt"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 210,
+          "max": 250,
+          "zones": [
+            {
+              "min": 210,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Voltage RMS"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  40
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Voltage RMS",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 210,
+                "suggestedMax": 250
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "IRMS",
+        "label": {
+          "class": "volt"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 20,
+          "zones": [
+            {
+              "min": 15.9,
+              "color": "#ff6b6b"
+            },
+            {
+              "min": 12.7,
+              "color": "#e6b800"
+            },
+            {
+              "min": 0,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Current RMS"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  20
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Current RMS",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 20
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "POWER_ACTIVE",
+        "label": {
+          "class": "volt"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 4500,
+          "zones": [
+            {
+              "min": 3500,
+              "color": "#ff6b6b"
+            },
+            {
+              "min": 2800,
+              "color": "#e6b800"
+            },
+            {
+              "min": 0,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Active power"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  4500
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Active power",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 4500
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "POWER_REACTIVE",
+        "label": {
+          "class": "volt"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 4000,
+          "zones": [
+            {
+              "min": 0,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Reactive power"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  4000
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Reactive power",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 4000
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "POWER_APPARENT",
+        "label": {
+          "class": "volt"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 5500,
+          "zones": [
+            {
+              "min": 3500,
+              "color": "#ff6b6b"
+            },
+            {
+              "min": 2800,
+              "color": "#e6b800"
+            },
+            {
+              "min": 0,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Apparent power"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  5500
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Apparent power",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 5500
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "FREQUENCY",
+        "label": {
+          "class": "volt"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 45,
+          "max": 55,
+          "zones": [
+            {
+              "min": 52,
+              "color": "#ff6b6b"
+            },
+            {
+              "min": 48,
+              "color": "#00c508"
+            },
+            {
+              "min": 45,
+              "color": "#ff6b6b"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Frequency"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  10
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Frequency",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 45,
+                "suggestedMax": 55
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "POWER_FACTOR",
+        "label": {
+          "class": "volt"
+        },
+        "canvas": {
+          "class": "chartcanvas",
+          "width": 872,
+          "height": 436
+        },
+        "gauge": {
+          "min": 0,
+          "max": 1,
+          "zones": [
+            {
+              "min": 0,
+              "color": "#00c508"
+            }
+          ]
+        },
+        "default_mode": "gauge",
+        "gauge_config": {
+          "type": "doughnut",
+          "data": {
+            "labels": [
+              "Power factor"
+            ],
+            "datasets": [
+              {
+                "data": [
+                  0,
+                  1
+                ],
+                "backgroundColor": [
+                  "#00c508",
+                  "#0d331a"
+                ],
+                "borderWidth": 0
+              }
+            ]
+          },
+          "options": {
+            "responsive": true,
+            "aspectRatio": 2,
+            "cutout": "78%",
+            "rotation": -90,
+            "circumference": 180,
+            "animation": {
+              "duration": 0
+            },
+            "plugins": {
+              "legend": {
+                "display": true
+              },
+              "tooltip": {
+                "enabled": false
+              }
+            }
+          }
+        },
+        "line_config": {
+          "type": "line",
+          "data": {
+            "labels": [],
+            "datasets": [
+              {
+                "label": "Power factor",
+                "fill": false,
+                "pointRadius": 1,
+                "backgroundColor": "#00c508",
+                "borderColor": "#00c508",
+                "data": []
+              }
+            ]
+          },
+          "options": {
+            "plugins": {
+              "decimation": {
+                "enabled": true,
+                "algorithm": "min-max"
+              }
+            },
+            "scales": {
+              "y": {
+                "grid": {
+                  "color": "#011201",
+                  "drawOnChartArea": true
+                },
+                "suggestedMin": 0,
+                "suggestedMax": 1
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "ENERGY_IMPORT_ACTIVE",
+        "widget": "value",
+        "value_label": "Energy import (active)"
+      },
+      {
+        "name": "ENERGY_EXPORT_ACTIVE",
+        "widget": "value",
+        "value_label": "Energy export (active)"
+      },
+      {
+        "name": "ENERGY_IMPORT_REACTIVE",
+        "widget": "value",
+        "value_label": "Energy import (reactive)"
+      },
+      {
+        "name": "ENERGY_EXPORT_REACTIVE",
+        "widget": "value",
+        "value_label": "Energy export (reactive)"
+      }
+    ]
+  }
+}

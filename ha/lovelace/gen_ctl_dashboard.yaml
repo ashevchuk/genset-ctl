@@ -1,0 +1,144 @@
+# Lovelace dashboard — Generator (MQTT package entities)
+#
+# Settings → Dashboards → Add dashboard → … → Raw configuration editor,
+# or merge the views: list into an existing dashboard.
+#
+# Entity IDs match default_entity_id in packages/gen_ctl.yaml (mqtt platform).
+# Every entities card keeps show_header_toggle: false — a header toggle on a
+# card holding the register switches would flip all relays in one tap.
+
+title: Generator
+views:
+  - title: Generator
+    path: generator
+    icon: mdi:engine
+    cards:
+      - type: entities
+        title: Control
+        show_header_toggle: false
+        entities:
+          - entity: sensor.gen_ctl_state
+            name: State
+          - entity: binary_sensor.gen_ctl_running
+            name: Running
+          - entity: button.gen_ctl_start
+            name: Start
+          - entity: button.gen_ctl_start_retry
+            name: Start (retry)
+          - entity: button.gen_ctl_stop
+            name: Stop
+
+      - type: glance
+        title: Live
+        columns: 3
+        entities:
+          - entity: sensor.gen_ctl_rpm
+            name: RPM
+          - entity: sensor.gen_ctl_power
+            name: Power
+          - entity: sensor.gen_ctl_vrms
+            name: Voltage
+          - entity: sensor.gen_ctl_freq
+            name: Hz
+          - entity: sensor.gen_ctl_fuel
+            name: Fuel
+          - entity: sensor.gen_ctl_battery
+            name: Battery
+          - entity: sensor.gen_ctl_head_temp
+            name: Head
+          - entity: sensor.gen_ctl_rssi
+            name: WiFi
+          - entity: sensor.gen_ctl_last_event
+            name: Last event
+
+      - type: entities
+        title: Outputs
+        show_header_toggle: false
+        entities:
+          - entity: switch.gen_ctl_load_relay
+            name: Load relay
+          - entity: switch.gen_ctl_eco_mode
+            name: ECO mode
+          - entity: switch.gen_ctl_charger
+            name: Charger
+          - entity: switch.gen_ctl_fuel_pump
+            name: Fuel pump
+          - entity: switch.gen_ctl_choke
+            name: Choke
+
+      - type: entities
+        title: Protection
+        show_header_toggle: false
+        entities:
+          - entity: binary_sensor.gen_ctl_in_oil
+            name: Oil fault
+          - entity: binary_sensor.gen_ctl_in_overload
+            name: Overload
+          - entity: binary_sensor.gen_ctl_in_output
+            name: AC output sense
+          - entity: binary_sensor.gen_ctl_in_gen_sense
+            name: Gen sense
+
+      - type: entities
+        title: Lifetime
+        show_header_toggle: false
+        entities:
+          - entity: sensor.gen_ctl_run_hours
+            name: Run hours
+          - entity: sensor.gen_ctl_charge_hours
+            name: Charge hours
+          - entity: sensor.gen_ctl_starts
+            name: Starts
+          - entity: sensor.gen_ctl_start_fails
+            name: Start fails
+          - entity: sensor.gen_ctl_emergencies
+            name: Emergencies
+          - entity: sensor.gen_ctl_charge_cycles
+            name: Charge cycles
+
+      - type: entities
+        title: Maintenance due
+        show_header_toggle: false
+        entities:
+          - entity: binary_sensor.gen_ctl_maint_oil_due
+            name: Oil
+          - entity: binary_sensor.gen_ctl_maint_spark_due
+            name: Spark plug
+          - entity: binary_sensor.gen_ctl_maint_air_due
+            name: Air filter
+          - entity: binary_sensor.gen_ctl_maint_fuel_filter_due
+            name: Fuel filter
+          - entity: binary_sensor.gen_ctl_maint_valves_due
+            name: Valves
+
+      - type: entities
+        title: Record service
+        show_header_toggle: false
+        entities:
+          - entity: button.gen_ctl_maint_oil
+            name: Oil
+          - entity: button.gen_ctl_maint_spark
+            name: Spark plug
+          - entity: button.gen_ctl_maint_air
+            name: Air filter
+          - entity: button.gen_ctl_maint_fuel_filter
+            name: Fuel filter
+          - entity: button.gen_ctl_maint_valves
+            name: Valves
+          - entity: button.gen_ctl_maint_other
+            name: Other
+
+      - type: history-graph
+        title: Power / RPM
+        hours_to_show: 6
+        entities:
+          - entity: sensor.gen_ctl_power
+          - entity: sensor.gen_ctl_rpm
+
+      - type: history-graph
+        title: Temperatures / battery
+        hours_to_show: 6
+        entities:
+          - entity: sensor.gen_ctl_head_temp
+          - entity: sensor.gen_ctl_battery
+          - entity: sensor.gen_ctl_fuel

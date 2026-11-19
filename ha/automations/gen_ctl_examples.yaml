@@ -1,0 +1,86 @@
+# Example automations — edit notify targets, then merge into automations.yaml
+# or drop into packages/ if your HA setup includes automation packages.
+#
+# Requires entities from packages/gen_ctl.yaml.
+
+automation:
+  - id: gen_ctl_notify_emergency_stop
+    alias: "Generator — notify emergency stop"
+    mode: single
+    trigger:
+      - platform: mqtt
+        topic: gen-ctl/event
+        value_template: "{{ value_json.type }}"
+        payload: emergency_stop
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Generator emergency stop"
+          message: >-
+            Reason: {{ trigger.payload_json.reason | default('unknown') }}
+            · state event seq {{ trigger.payload_json.seq | default('?') }}
+
+  - id: gen_ctl_notify_start_fail
+    alias: "Generator — notify start failure"
+    mode: single
+    trigger:
+      - platform: mqtt
+        topic: gen-ctl/event
+        value_template: "{{ value_json.type }}"
+        payload: start_fail
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Generator start failed"
+          message: >-
+            Attempts: {{ trigger.payload_json.attempts | default('?') }}
+            · bat {{ trigger.payload_json.bat_v | default('?') }} V
+
+  - id: gen_ctl_notify_oil_fault
+    alias: "Generator — notify oil fault while running"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.gen_ctl_in_oil
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: binary_sensor.gen_ctl_running
+        state: "on"
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Generator oil fault"
+          message: "Oil protection input active while running."
+
+  - id: gen_ctl_notify_maint_due
+    alias: "Generator — notify any maintenance due"
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id:
+          - binary_sensor.gen_ctl_maint_oil_due
+          - binary_sensor.gen_ctl_maint_spark_due
+          - binary_sensor.gen_ctl_maint_air_due
+          - binary_sensor.gen_ctl_maint_fuel_filter_due
+          - binary_sensor.gen_ctl_maint_valves_due
+        to: "on"
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Generator maintenance due"
+          message: "{{ trigger.to_state.name }} is due."
+
+  - id: gen_ctl_notify_offline
+    alias: "Generator — notify MQTT state stale / offline"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.gen_ctl_state
+        to: unavailable
+        for: "00:01:00"
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Generator offline"
+          message: "No gen-ctl/state for >1 minute (sensor expired)."

@@ -1,0 +1,43 @@
+# Only applied to the nodebug build (compile_nodebug.sh/flash_nodebug.sh
+# layer this on top of sdkconfig.defaults via SDKCONFIG_DEFAULTS — see those
+# scripts). DEBUG_SERIAL_ENABLED=0 (debug.h) already silences this project's
+# own SLOG_*() output and calls esp_log_level_set("*", ESP_LOG_NONE) as the
+# very first line of setup() (SLOG_SILENCE_IDF_LOGS()) — but that's a
+# runtime call, so it can't reach anything ESP-IDF prints before setup() is
+# ever called (the 2nd-stage bootloader's own banner/partition-table dump,
+# and the handful of cpu_start/heap_init lines between the bootloader
+# handing off and app_main() calling setup()). These two options are the
+# compile-time equivalent, confirmed against this project's actual
+# /opt/esp-idf (v6.0.2) Kconfig sources, not assumed from older docs.
+
+# components/bootloader/Kconfig.log — the bootloader's own UART log
+# verbosity is a separate, compile-time-only setting; nothing at the app
+# level (including SLOG_SILENCE_IDF_LOGS()) can reach it, since it runs
+# before any app code exists. "No output" silences the 2nd-stage bootloader
+# banner and partition-table dump entirely.
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
+
+# components/log/Kconfig.level — sets the app's default ESP_LOG* level to
+# NONE. CONFIG_LOG_MAXIMUM_LEVEL is left at its own default ("same as
+# default"), which resolves to NONE too once this is set — meaning ESP_LOG*
+# call sites are compiled out of the binary entirely here, not just silenced
+# at runtime (smaller flash footprint too, not just quieter). Panic/crash
+# output (Guru Meditation, backtrace) goes through a separate mechanism, not
+# ESP_LOG*, so this does not silence crash diagnostics on serial.
+CONFIG_LOG_DEFAULT_LEVEL_NONE=y
+
+# managed_components/espressif__arduino-esp32/Kconfig.projbuild — a THIRD,
+# separate logging system, arduino-esp32's own log_e()/log_w()/log_i()
+# (esp32-hal-log.h, the "[time][E][file:line] func(): msg" format), used
+# throughout the arduino-esp32 core/library code itself (WiFi, NetworkClient,
+# etc.) — NOT the same macros as this project's own SLOG_*() or ESP-IDF's
+# ESP_LOG*, and gated by its own independent compile-time level check
+# (#if ARDUHAL_LOG_LEVEL >= ...). Its own Kconfig default is
+# ARDUHAL_LOG_DEFAULT_LEVEL_ERROR, so log_e() calls (level 1, ERROR) stayed
+# compiled in even with both options above set — found live 2026-09-25 via
+# a real "NetworkClient.cpp:435] write(): fail ... Connection reset by peer"
+# line on a build with DEBUG_SERIAL_ENABLED=0 already flashed to production
+# (a benign disconnect message, but proof the "silent" build wasn't fully
+# silent). CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL is a distinct Kconfig namespace
+# from CONFIG_LOG_DEFAULT_LEVEL above — setting one does not set the other.
+CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL_NONE=y

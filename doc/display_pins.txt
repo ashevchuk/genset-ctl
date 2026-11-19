@@ -1,0 +1,9 @@
+- IO6  (black)   (start, momentary)  — debounced falling edge → ws_send("start_retry") once.
+- IO7  (yellow)  (stop, momentary)   — debounced falling edge → ws_send("stop") once.
+- IO9  (orange)  (autostart armed)   — plain debounced level, LOW = armed; sends nothing on its own, only gates IO14.
+- IO14 (brown)   (autostart trigger) — debounced falling edge (grounded) while IO9 reads armed → ws_send("start_retry") once;
+    debounced rising edge (released) → ws_send("stop") once, unconditionally, regardless of IO9's state and of who started the generator.
+    If there's no WS link at the moment of the edge — nothing is sent, no queueing or retry (either direction, start or stop).
+- IO15 (green)   (link)             — live, re-evaluated every poll: ws_client_connected() && gen.valid, drops to LOW immediately on loss.
+- IO16 (blue)    (generator running)— driven from gen.running only while gen.valid == true;
+    once gen.valid drops, writing simply stops — the physical level is left as it was, no forced reset.

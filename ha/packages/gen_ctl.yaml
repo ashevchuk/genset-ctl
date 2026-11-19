@@ -1,0 +1,617 @@
+# Home Assistant package — ESP32 generator controller (MQTT)
+#
+# Install: copy to /config/packages/gen_ctl.yaml with
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Topic prefix must match wifi.json mqtt.topic_prefix (default: gen-ctl).
+# If the controller uses another prefix, replace every "gen-ctl/" below.
+# Wire format: repo MQTT.md
+#
+# Entity IDs are pinned with default_entity_id (<domain>.gen_ctl_*), which the
+# dashboard in ../lovelace relies on. The older per-entity object_id key is
+# rejected by current Home Assistant (verified on 2026.11.1: every entity
+# fails with "not a valid option at 'object_id'") — don't reintroduce it.
+#
+# The five register switches below (choke, fuel_pump, eco_mode, load_relay,
+# charger) all belong to one device, so an auto-generated dashboard puts them
+# in one entities card with a header toggle that flips all of them at once.
+# See ../README.md, "Register switches and header toggles".
+
+mqtt:
+  sensor:
+    # ---- Live state (gen-ctl/state, ~5 s) ---------------------------------
+    - name: "Generator State"
+      unique_id: gen_ctl_state
+      default_entity_id: sensor.gen_ctl_state
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.state }}"
+      expire_after: 30
+      icon: mdi:engine
+      device: &gen_ctl_device
+        identifiers: ["esp32_gen_ctl"]
+        name: "Generator"
+        model: "ESP32 Gen-Ctl AI RTOS"
+        manufacturer: "gen-ctl"
+
+    - name: "Generator State ID"
+      unique_id: gen_ctl_state_id
+      default_entity_id: sensor.gen_ctl_state_id
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.state_id }}"
+      expire_after: 30
+      entity_category: diagnostic
+      icon: mdi:numeric
+      device: *gen_ctl_device
+
+    - name: "Generator RPM"
+      unique_id: gen_ctl_rpm
+      default_entity_id: sensor.gen_ctl_rpm
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.rpm }}"
+      unit_of_measurement: "RPM"
+      state_class: measurement
+      expire_after: 30
+      icon: mdi:gauge
+      device: *gen_ctl_device
+
+    - name: "Generator Frequency"
+      unique_id: gen_ctl_freq
+      default_entity_id: sensor.gen_ctl_freq
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.freq }}"
+      unit_of_measurement: "Hz"
+      device_class: frequency
+      state_class: measurement
+      expire_after: 30
+      device: *gen_ctl_device
+
+    - name: "Generator Battery"
+      unique_id: gen_ctl_battery
+      default_entity_id: sensor.gen_ctl_battery
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.bat_v }}"
+      unit_of_measurement: "V"
+      device_class: voltage
+      state_class: measurement
+      expire_after: 30
+      device: *gen_ctl_device
+
+    - name: "Generator Fuel"
+      unique_id: gen_ctl_fuel
+      default_entity_id: sensor.gen_ctl_fuel
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.fuel }}"
+      unit_of_measurement: "L"
+      state_class: measurement
+      expire_after: 30
+      icon: mdi:gas-station
+      device: *gen_ctl_device
+
+    - name: "Generator Head Temperature"
+      unique_id: gen_ctl_head_temp
+      default_entity_id: sensor.gen_ctl_head_temp
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.head_temp }}"
+      unit_of_measurement: "°C"
+      device_class: temperature
+      state_class: measurement
+      expire_after: 30
+      device: *gen_ctl_device
+
+    - name: "Generator Voltage"
+      unique_id: gen_ctl_vrms
+      default_entity_id: sensor.gen_ctl_vrms
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.vrms }}"
+      unit_of_measurement: "V"
+      device_class: voltage
+      state_class: measurement
+      expire_after: 30
+      device: *gen_ctl_device
+
+    - name: "Generator Power"
+      unique_id: gen_ctl_power
+      default_entity_id: sensor.gen_ctl_power
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.power }}"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      expire_after: 30
+      device: *gen_ctl_device
+
+    - name: "Generator WiFi RSSI"
+      unique_id: gen_ctl_rssi
+      default_entity_id: sensor.gen_ctl_rssi
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.rssi }}"
+      unit_of_measurement: "dBm"
+      device_class: signal_strength
+      state_class: measurement
+      entity_category: diagnostic
+      expire_after: 30
+      device: *gen_ctl_device
+
+    - name: "Generator Free Heap"
+      unique_id: gen_ctl_heap
+      default_entity_id: sensor.gen_ctl_heap
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.heap }}"
+      unit_of_measurement: "B"
+      state_class: measurement
+      entity_category: diagnostic
+      expire_after: 30
+      icon: mdi:memory
+      device: *gen_ctl_device
+
+    - name: "Generator Min Heap"
+      unique_id: gen_ctl_min_heap
+      default_entity_id: sensor.gen_ctl_min_heap
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.min_heap }}"
+      unit_of_measurement: "B"
+      state_class: measurement
+      entity_category: diagnostic
+      expire_after: 30
+      icon: mdi:memory
+      device: *gen_ctl_device
+
+    - name: "Generator Run Hours (live)"
+      unique_id: gen_ctl_run_hours_live
+      default_entity_id: sensor.gen_ctl_run_hours_live
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.run_hours }}"
+      unit_of_measurement: "h"
+      state_class: total_increasing
+      expire_after: 30
+      icon: mdi:timer-outline
+      device: *gen_ctl_device
+
+    - name: "Generator Starts (live)"
+      unique_id: gen_ctl_starts_live
+      default_entity_id: sensor.gen_ctl_starts_live
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.starts }}"
+      state_class: total_increasing
+      expire_after: 30
+      icon: mdi:counter
+      device: *gen_ctl_device
+
+    # ---- Last journal event (gen-ctl/event) --------------------------------
+    - name: "Generator Last Event"
+      unique_id: gen_ctl_last_event
+      default_entity_id: sensor.gen_ctl_last_event
+      state_topic: "gen-ctl/event"
+      value_template: "{{ value_json.type }}"
+      json_attributes_topic: "gen-ctl/event"
+      icon: mdi:notebook-outline
+      device: *gen_ctl_device
+
+    # ---- Lifetime metrics (gen-ctl/metrics, retained, ~60 s) ---------------
+    - name: "Generator Run Hours"
+      unique_id: gen_ctl_run_hours
+      default_entity_id: sensor.gen_ctl_run_hours
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.run_hours }}"
+      unit_of_measurement: "h"
+      state_class: total_increasing
+      expire_after: 180
+      icon: mdi:timer
+      device: *gen_ctl_device
+
+    - name: "Generator Charge Hours"
+      unique_id: gen_ctl_charge_hours
+      default_entity_id: sensor.gen_ctl_charge_hours
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.charge_hours }}"
+      unit_of_measurement: "h"
+      state_class: total_increasing
+      expire_after: 180
+      icon: mdi:battery-charging
+      device: *gen_ctl_device
+
+    - name: "Generator Starts"
+      unique_id: gen_ctl_starts
+      default_entity_id: sensor.gen_ctl_starts
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.starts }}"
+      state_class: total_increasing
+      expire_after: 180
+      icon: mdi:counter
+      device: *gen_ctl_device
+
+    - name: "Generator Start Failures"
+      unique_id: gen_ctl_start_fails
+      default_entity_id: sensor.gen_ctl_start_fails
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.start_fails }}"
+      state_class: total_increasing
+      expire_after: 180
+      icon: mdi:alert-circle-outline
+      device: *gen_ctl_device
+
+    - name: "Generator Emergencies"
+      unique_id: gen_ctl_emergencies
+      default_entity_id: sensor.gen_ctl_emergencies
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.emergencies }}"
+      state_class: total_increasing
+      expire_after: 180
+      icon: mdi:alarm-light
+      device: *gen_ctl_device
+
+    - name: "Generator Charge Cycles"
+      unique_id: gen_ctl_charge_cycles
+      default_entity_id: sensor.gen_ctl_charge_cycles
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.charge_cycles }}"
+      state_class: total_increasing
+      expire_after: 180
+      icon: mdi:recycle
+      device: *gen_ctl_device
+
+    - name: "Generator Max Head Temperature"
+      unique_id: gen_ctl_max_head_temp
+      default_entity_id: sensor.gen_ctl_max_head_temp
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.max_head_temp }}"
+      unit_of_measurement: "°C"
+      device_class: temperature
+      state_class: measurement
+      expire_after: 180
+      entity_category: diagnostic
+      device: *gen_ctl_device
+
+    - name: "Generator Max RPM"
+      unique_id: gen_ctl_max_rpm
+      default_entity_id: sensor.gen_ctl_max_rpm
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.max_rpm }}"
+      unit_of_measurement: "RPM"
+      state_class: measurement
+      expire_after: 180
+      entity_category: diagnostic
+      icon: mdi:gauge
+      device: *gen_ctl_device
+
+    - name: "Generator Max Power"
+      unique_id: gen_ctl_max_power
+      default_entity_id: sensor.gen_ctl_max_power
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.max_power }}"
+      unit_of_measurement: "W"
+      device_class: power
+      state_class: measurement
+      expire_after: 180
+      entity_category: diagnostic
+      device: *gen_ctl_device
+
+    - name: "Generator Oil Hours Since Service"
+      unique_id: gen_ctl_maint_oil_hours
+      default_entity_id: sensor.gen_ctl_maint_oil_hours
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.maintenance.oil.hours_since }}"
+      unit_of_measurement: "h"
+      state_class: measurement
+      expire_after: 180
+      icon: mdi:oil
+      device: *gen_ctl_device
+
+    - name: "Generator Spark Plug Hours Since Service"
+      unique_id: gen_ctl_maint_spark_hours
+      default_entity_id: sensor.gen_ctl_maint_spark_hours
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.maintenance.spark_plug.hours_since }}"
+      unit_of_measurement: "h"
+      state_class: measurement
+      expire_after: 180
+      icon: mdi:engine
+      device: *gen_ctl_device
+
+    - name: "Generator Air Filter Hours Since Service"
+      unique_id: gen_ctl_maint_air_hours
+      default_entity_id: sensor.gen_ctl_maint_air_hours
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.maintenance.air_filter.hours_since }}"
+      unit_of_measurement: "h"
+      state_class: measurement
+      expire_after: 180
+      icon: mdi:air-filter
+      device: *gen_ctl_device
+
+    - name: "Generator Fuel Filter Hours Since Service"
+      unique_id: gen_ctl_maint_fuel_filter_hours
+      default_entity_id: sensor.gen_ctl_maint_fuel_filter_hours
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.maintenance.fuel_filter.hours_since }}"
+      unit_of_measurement: "h"
+      state_class: measurement
+      expire_after: 180
+      icon: mdi:fuel
+      device: *gen_ctl_device
+
+    - name: "Generator Valves Hours Since Service"
+      unique_id: gen_ctl_maint_valves_hours
+      default_entity_id: sensor.gen_ctl_maint_valves_hours
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.maintenance.valves.hours_since }}"
+      unit_of_measurement: "h"
+      state_class: measurement
+      expire_after: 180
+      icon: mdi:valve
+      device: *gen_ctl_device
+
+  binary_sensor:
+    - name: "Generator Running"
+      unique_id: gen_ctl_running
+      default_entity_id: binary_sensor.gen_ctl_running
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.is_running }}"
+      payload_on: "1"
+      payload_off: "0"
+      device_class: running
+      expire_after: 30
+      device: *gen_ctl_device
+
+    - name: "Generator AC Output Sense"
+      unique_id: gen_ctl_in_output
+      default_entity_id: binary_sensor.gen_ctl_in_output
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.in_output }}"
+      payload_on: "1"
+      payload_off: "0"
+      expire_after: 30
+      icon: mdi:power-plug
+      device: *gen_ctl_device
+
+    - name: "Generator Sense"
+      unique_id: gen_ctl_in_gen_sense
+      default_entity_id: binary_sensor.gen_ctl_in_gen_sense
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.in_gen_sense }}"
+      payload_on: "1"
+      payload_off: "0"
+      expire_after: 30
+      entity_category: diagnostic
+      icon: mdi:lightning-bolt
+      device: *gen_ctl_device
+
+    - name: "Generator Oil Fault"
+      unique_id: gen_ctl_in_oil
+      default_entity_id: binary_sensor.gen_ctl_in_oil
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.in_oil }}"
+      payload_on: "1"
+      payload_off: "0"
+      device_class: problem
+      expire_after: 30
+      device: *gen_ctl_device
+
+    - name: "Generator Overload"
+      unique_id: gen_ctl_in_overload
+      default_entity_id: binary_sensor.gen_ctl_in_overload
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.in_overload }}"
+      payload_on: "1"
+      payload_off: "0"
+      device_class: problem
+      expire_after: 30
+      device: *gen_ctl_device
+
+    # due is only present when an interval is configured on the controller
+    - name: "Generator Oil Service Due"
+      unique_id: gen_ctl_maint_oil_due
+      default_entity_id: binary_sensor.gen_ctl_maint_oil_due
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.maintenance.oil.due | default(false) }}"
+      payload_on: "True"
+      payload_off: "False"
+      device_class: problem
+      expire_after: 180
+      device: *gen_ctl_device
+
+    - name: "Generator Spark Plug Service Due"
+      unique_id: gen_ctl_maint_spark_due
+      default_entity_id: binary_sensor.gen_ctl_maint_spark_due
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.maintenance.spark_plug.due | default(false) }}"
+      payload_on: "True"
+      payload_off: "False"
+      device_class: problem
+      expire_after: 180
+      device: *gen_ctl_device
+
+    - name: "Generator Air Filter Service Due"
+      unique_id: gen_ctl_maint_air_due
+      default_entity_id: binary_sensor.gen_ctl_maint_air_due
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.maintenance.air_filter.due | default(false) }}"
+      payload_on: "True"
+      payload_off: "False"
+      device_class: problem
+      expire_after: 180
+      device: *gen_ctl_device
+
+    - name: "Generator Fuel Filter Service Due"
+      unique_id: gen_ctl_maint_fuel_filter_due
+      default_entity_id: binary_sensor.gen_ctl_maint_fuel_filter_due
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.maintenance.fuel_filter.due | default(false) }}"
+      payload_on: "True"
+      payload_off: "False"
+      device_class: problem
+      expire_after: 180
+      device: *gen_ctl_device
+
+    - name: "Generator Valves Service Due"
+      unique_id: gen_ctl_maint_valves_due
+      default_entity_id: binary_sensor.gen_ctl_maint_valves_due
+      state_topic: "gen-ctl/metrics"
+      value_template: "{{ value_json.maintenance.valves.due | default(false) }}"
+      payload_on: "True"
+      payload_off: "False"
+      device_class: problem
+      expire_after: 180
+      device: *gen_ctl_device
+
+  switch:
+    - name: "Generator Choke"
+      unique_id: gen_ctl_choke
+      default_entity_id: switch.gen_ctl_choke
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.reg_choke }}"
+      command_topic: "gen-ctl/cmd/choke"
+      payload_on: "1"
+      payload_off: "0"
+      state_on: "1"
+      state_off: "0"
+      icon: mdi:pipe-valve
+      device: *gen_ctl_device
+
+    - name: "Generator Fuel Pump"
+      unique_id: gen_ctl_fuel_pump
+      default_entity_id: switch.gen_ctl_fuel_pump
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.reg_fuel_pump }}"
+      command_topic: "gen-ctl/cmd/fuel_pump"
+      payload_on: "1"
+      payload_off: "0"
+      state_on: "1"
+      state_off: "0"
+      icon: mdi:fuel
+      device: *gen_ctl_device
+
+    - name: "Generator ECO Mode"
+      unique_id: gen_ctl_eco_mode
+      default_entity_id: switch.gen_ctl_eco_mode
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.reg_eco_mode }}"
+      command_topic: "gen-ctl/cmd/eco_mode"
+      payload_on: "1"
+      payload_off: "0"
+      state_on: "1"
+      state_off: "0"
+      icon: mdi:leaf
+      device: *gen_ctl_device
+
+    - name: "Generator Load Relay"
+      unique_id: gen_ctl_load_relay
+      default_entity_id: switch.gen_ctl_load_relay
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.reg_load_relay }}"
+      command_topic: "gen-ctl/cmd/load_relay"
+      payload_on: "1"
+      payload_off: "0"
+      state_on: "1"
+      state_off: "0"
+      icon: mdi:electric-switch
+      device: *gen_ctl_device
+
+    - name: "Generator Charger"
+      unique_id: gen_ctl_charger
+      default_entity_id: switch.gen_ctl_charger
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.reg_charger }}"
+      command_topic: "gen-ctl/cmd/charger"
+      payload_on: "1"
+      payload_off: "0"
+      state_on: "1"
+      state_off: "0"
+      icon: mdi:battery-charging-outline
+      device: *gen_ctl_device
+
+  button:
+    - name: "Generator Start"
+      unique_id: gen_ctl_start
+      default_entity_id: button.gen_ctl_start
+      command_topic: "gen-ctl/cmd/start"
+      payload_press: "1"
+      # Pressable only when the controller would actually accept a start:
+      # state "idle", 0 RPM, in_output and in_gen_sense off — the same gate as
+      # is_not_working() (the temperature start-inhibit isn't in the state JSON).
+      # Greyed out otherwise. No expiry exists for button availability, so if
+      # the controller goes silent the last known value stays.
+      availability_topic: "gen-ctl/state"
+      availability_template: >-
+        {{ 'online' if value_json.state == 'idle' and value_json.rpm == 0 and value_json.in_output == 0 and value_json.in_gen_sense == 0 else 'offline' }}
+      icon: mdi:engine-outline
+      device: *gen_ctl_device
+
+    - name: "Generator Start Retry"
+      unique_id: gen_ctl_start_retry
+      default_entity_id: button.gen_ctl_start_retry
+      command_topic: "gen-ctl/cmd/start_retry"
+      payload_press: "1"
+      # Pressable only when the controller would actually accept a start:
+      # state "idle", 0 RPM, in_output and in_gen_sense off — the same gate as
+      # is_not_working() (the temperature start-inhibit isn't in the state JSON).
+      # Greyed out otherwise. No expiry exists for button availability, so if
+      # the controller goes silent the last known value stays.
+      availability_topic: "gen-ctl/state"
+      availability_template: >-
+        {{ 'online' if value_json.state == 'idle' and value_json.rpm == 0 and value_json.in_output == 0 and value_json.in_gen_sense == 0 else 'offline' }}
+      icon: mdi:restart
+      device: *gen_ctl_device
+
+    - name: "Generator Stop"
+      unique_id: gen_ctl_stop
+      default_entity_id: button.gen_ctl_stop
+      command_topic: "gen-ctl/cmd/stop"
+      payload_press: "1"
+      icon: mdi:engine-off-outline
+      device: *gen_ctl_device
+
+    - name: "Generator Record Oil Service"
+      unique_id: gen_ctl_maint_oil
+      default_entity_id: button.gen_ctl_maint_oil
+      command_topic: "gen-ctl/cmd/maintenance"
+      payload_press: "oil"
+      entity_category: config
+      icon: mdi:oil
+      device: *gen_ctl_device
+
+    - name: "Generator Record Spark Plug Service"
+      unique_id: gen_ctl_maint_spark
+      default_entity_id: button.gen_ctl_maint_spark
+      command_topic: "gen-ctl/cmd/maintenance"
+      payload_press: "spark_plug"
+      entity_category: config
+      icon: mdi:engine
+      device: *gen_ctl_device
+
+    - name: "Generator Record Air Filter Service"
+      unique_id: gen_ctl_maint_air
+      default_entity_id: button.gen_ctl_maint_air
+      command_topic: "gen-ctl/cmd/maintenance"
+      payload_press: "air_filter"
+      entity_category: config
+      icon: mdi:air-filter
+      device: *gen_ctl_device
+
+    - name: "Generator Record Fuel Filter Service"
+      unique_id: gen_ctl_maint_fuel_filter
+      default_entity_id: button.gen_ctl_maint_fuel_filter
+      command_topic: "gen-ctl/cmd/maintenance"
+      payload_press: "fuel_filter"
+      entity_category: config
+      icon: mdi:fuel
+      device: *gen_ctl_device
+
+    - name: "Generator Record Valves Service"
+      unique_id: gen_ctl_maint_valves
+      default_entity_id: button.gen_ctl_maint_valves
+      command_topic: "gen-ctl/cmd/maintenance"
+      payload_press: "valves"
+      entity_category: config
+      icon: mdi:valve
+      device: *gen_ctl_device
+
+    - name: "Generator Record Other Service"
+      unique_id: gen_ctl_maint_other
+      default_entity_id: button.gen_ctl_maint_other
+      command_topic: "gen-ctl/cmd/maintenance"
+      payload_press: "other"
+      entity_category: config
+      icon: mdi:wrench
+      device: *gen_ctl_device

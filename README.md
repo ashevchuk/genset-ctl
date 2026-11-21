@@ -26,6 +26,14 @@ path isn't available.
   screen, showing live state, a journal view, and remote-control hardware
   I/O (physical start/stop buttons, autostart trigger, status outputs).
 
+> **A note on the bill of materials.** The component selection for this
+> board was not driven by engineering merit, cost, or availability. It was
+> driven by a pressing need to finally do *something* with a drawer full of
+> aging parts that had been "too good to throw away" for years. If you are
+> building your own, please do not treat this BOM as a recommendation:
+> pick modern parts on purpose instead of inheriting someone else's
+> stockpile by accident.
+
 ## Features
 
 - Generator auto start/stop state machine with retry logic, emergency-stop

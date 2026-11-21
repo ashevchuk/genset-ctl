@@ -1,4 +1,4 @@
-# genset-ctl-rtos
+# genset-ctl-freertos
 
 Firmware for an ESP32-based generator (genset) controller: automatic
 start/stop state machine, shift-register relay I/O, sensor monitoring, a

@@ -344,13 +344,9 @@ void ReportTask(void *pvParameters) {
                 // UI (Controls-tab Record button) instead of re-parsing the
                 // human-readable label list above, which is free text and not
                 // safe to match back to a subtype index.
-                uint8_t due_mask = 0;
+                uint8_t due_mask = fram_maint_due_mask(&fm_snapshot, g_limits_config.maint_interval_hours);
                 for (uint8_t i = 0; i < FLOG_MAINT_TYPES; i++) {
-                    float thr = g_limits_config.maint_interval_hours[i];
-                    if (thr <= 0.0f) continue;
-                    double since_h = fram_maint_hours_since(&fm_snapshot, i);
-                    if (since_h < (double)thr) continue;
-                    due_mask |= (1u << i);
+                    if (!(due_mask & (1u << i))) continue;
                     int a = snprintf(list_buf + list_len, sizeof(list_buf) - list_len,
                                       "%s%s", list_len ? ", " : "", MAINT_TYPE_LABELS[i]);
                     if (a > 0) list_len += a;

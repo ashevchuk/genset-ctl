@@ -46,6 +46,10 @@ typedef struct __attribute__((packed)) {
 // ---------------------------------------------------------------------------
 static FRAM32 *s_fram = NULL;
 static bool    s_present = false;
+// The read jobs' static buffers and done semaphores are shared by every
+// reader (httpd for /log, EspNowTask for the panel's journal), so one reader
+// at a time. Created in fram_log_begin(), before any task exists.
+static SemaphoreHandle_t s_read_lock = NULL;
 
 static portMUX_TYPE s_flog_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t     s_next_seq = 1;       // seq of the NEXT record to write
@@ -538,6 +542,7 @@ void fram_log_check_panic_summary(void) {
 bool fram_log_begin(FRAM32 *dev) {
     s_fram = dev;
     s_present = false;
+    if (s_read_lock == NULL) s_read_lock = xSemaphoreCreateMutex();
     if (dev == NULL) return false;
 
     FlogHeader h = {};
@@ -608,19 +613,59 @@ static bool job_fram_read(void *arg) {
 }
 
 bool fram_log_read(uint32_t seq, FramLogRecord *out) {
-    if (!s_present || seq == 0) return false;
+    if (!s_present || seq == 0 || s_read_lock == NULL) return false;
     uint32_t newest = fram_log_newest_seq();
     uint32_t oldest = fram_log_oldest_seq();
     if (seq < oldest || seq > newest) return false;
 
     static SemaphoreHandle_t s_done = NULL;
+    xSemaphoreTake(s_read_lock, portMAX_DELAY);
     if (s_done == NULL) s_done = xSemaphoreCreateBinary();
     s_read_job.seq = seq;
-    if (!i2c_run_on_owner(job_fram_read, &s_read_job, s_done, pdMS_TO_TICKS(500))) return false;
-    if (!s_read_job.ok) return false;
-    *out = s_read_job.rec;
+    bool ran = i2c_run_on_owner(job_fram_read, &s_read_job, s_done, pdMS_TO_TICKS(500));
+    bool ok = ran && s_read_job.ok;
+    if (ok) *out = s_read_job.rec;
+    xSemaphoreGive(s_read_lock);
 
-    return out->seq == seq && out->crc == rec_crc(out);
+    return ok && out->seq == seq && out->crc == rec_crc(out);
+}
+
+typedef struct {
+    uint32_t from;
+    int n;
+    FramLogRecord rec[FLOG_READ_BATCH_MAX];
+    bool ok[FLOG_READ_BATCH_MAX];
+} FramBatchJob;
+static FramBatchJob s_batch_job;
+static bool job_fram_read_batch(void *arg) {
+    FramBatchJob *j = (FramBatchJob *)arg;
+    for (int i = 0; i < j->n; i++)
+        j->ok[i] = s_fram->readObject(slot_addr(seq_slot(j->from - i)), j->rec[i]);
+    return true;
+}
+
+int fram_log_read_batch(uint32_t from, int n, FramLogRecord *out, bool *ok) {
+    if (!s_present || from == 0 || n <= 0 || s_read_lock == NULL) return 0;
+    uint32_t newest = fram_log_newest_seq();
+    uint32_t oldest = fram_log_oldest_seq();
+    if (from < oldest || from > newest) return 0;
+    if (n > FLOG_READ_BATCH_MAX) n = FLOG_READ_BATCH_MAX;
+    if ((uint32_t)n > from - oldest + 1) n = (int)(from - oldest + 1);
+
+    static SemaphoreHandle_t s_done = NULL;
+    xSemaphoreTake(s_read_lock, portMAX_DELAY);
+    if (s_done == NULL) s_done = xSemaphoreCreateBinary();
+    s_batch_job.from = from;
+    s_batch_job.n = n;
+    bool ran = i2c_run_on_owner(job_fram_read_batch, &s_batch_job, s_done, pdMS_TO_TICKS(1000));
+    if (ran) {
+        for (int i = 0; i < n; i++) {
+            out[i] = s_batch_job.rec[i];
+            ok[i] = s_batch_job.ok[i] && out[i].seq == from - i && out[i].crc == rec_crc(&out[i]);
+        }
+    }
+    xSemaphoreGive(s_read_lock);
+    return ran ? n : 0;
 }
 
 // Static, not a stack-local args struct, for the same reason as
@@ -678,6 +723,16 @@ double fram_maint_hours_since(const FramMetrics *m, uint8_t idx) {
     if (!m->maint_ts[idx]) return (double)m->total_run_seconds / 3600.0;
     if (m->maint_seconds[idx] > m->total_run_seconds) return 0.0;  // see fram_log.h comment
     return (double)(m->total_run_seconds - m->maint_seconds[idx]) / 3600.0;
+}
+
+uint8_t fram_maint_due_mask(const FramMetrics *m, const float *interval_hours) {
+    uint8_t mask = 0;
+    for (uint8_t i = 0; i < FLOG_MAINT_TYPES; i++) {
+        float thr = interval_hours[i];
+        if (thr <= 0.0f) continue;
+        if (fram_maint_hours_since(m, i) >= (double)thr) mask |= (1u << i);
+    }
+    return mask;
 }
 
 static bool metrics_flush_on_owner(void) {

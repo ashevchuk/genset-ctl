@@ -36,12 +36,17 @@ EspNowConfig_t g_espnow_config = {
 
 // ---- wire format (ESPNOW.md is the source of truth — keep both in sync) --
 
-#define ESPNOW_PROTO_VERSION 2
-#define ESPNOW_MAGIC_STATE   0xE5
-#define ESPNOW_MAGIC_CMD     0xEC
-#define ESPNOW_MAGIC_BEACON  0xEB
-#define ESPNOW_MAGIC_HELLO   0xE1
-#define ESPNOW_NAME_LEN      24
+#define ESPNOW_PROTO_VERSION   3
+#define ESPNOW_MAGIC_STATE     0xE5
+#define ESPNOW_MAGIC_CMD       0xEC
+#define ESPNOW_MAGIC_BEACON    0xEB
+#define ESPNOW_MAGIC_HELLO     0xE1
+#define ESPNOW_MAGIC_JRN_REQ   0xE7
+#define ESPNOW_MAGIC_JRN_EVENT 0xE8
+#define ESPNOW_MAGIC_JRN_END   0xE9
+#define ESPNOW_NAME_LEN        24
+#define ESPNOW_MAX_PAYLOAD     250  // ESP-NOW v1 frame limit
+#define ESPNOW_JRN_MAX_EVENTS  25
 
 #define ESPNOW_FLAG_WORKING  0x01  // !is_not_working() — same as WS switch.run
 
@@ -88,6 +93,7 @@ struct __attribute__((packed)) EspNowStatePkt {
     float    irms;
     float    active_power_w;
     uint32_t sta_ip;        // controller's STA IPv4 (network order), 0 if none
+    uint8_t  maint_due_mask;  // WS MAINT_DUE_MASK
 };
 
 // Display -> controller, unicast, encrypted. Mirrors WebCommandType_t
@@ -98,15 +104,59 @@ enum EspNowCmd_t : uint8_t {
     ESPNOW_CMD_STOP,
     ESPNOW_CMD_REG_SET,
     ESPNOW_CMD_REG_TOGGLE,
+    ESPNOW_CMD_MAINT,       // record maintenance; `reg` = FLOG_MAINT_* subtype
 };
 
 struct __attribute__((packed)) EspNowCmdPkt {
     uint8_t magic;
     uint8_t proto_version;
     uint8_t cmd;    // EspNowCmd_t
-    uint8_t reg;    // for REG_SET/REG_TOGGLE
+    uint8_t reg;    // for REG_SET/REG_TOGGLE; subtype for MAINT
     uint8_t state;  // for REG_SET: desired state (0/1)
 };
+
+// Display -> controller, unicast, encrypted: send the newest `count` journal
+// events. Answered with JrnEvent packets (one event each), then one JrnEnd.
+struct __attribute__((packed)) EspNowJrnReqPkt {
+    uint8_t magic;
+    uint8_t proto_version;
+    uint8_t req_id;  // echoed in the answer so a late one can be told apart
+    uint8_t count;
+};
+
+// Controller -> display: one event as the same JSON object GET /log returns.
+// Variable length; the JSON is not NUL-terminated.
+struct __attribute__((packed)) EspNowJrnEventHdr {
+    uint8_t magic;
+    uint8_t proto_version;
+    uint8_t req_id;
+    uint8_t idx;     // 0 = newest
+};
+
+// Controller -> display: closes an answer; also carries the lifetime metrics
+// the panel's journal tab shows (GET /metrics equivalents).
+struct __attribute__((packed)) EspNowJrnEndPkt {
+    uint8_t  magic;
+    uint8_t  proto_version;
+    uint8_t  req_id;
+    uint8_t  count;           // JrnEvent packets sent for this req_id
+    uint32_t ts_now;          // /log ts_now
+    uint32_t run_seconds;
+    uint32_t charge_seconds;
+    uint32_t starts;
+    uint32_t start_fails;
+    uint32_t emergencies;
+    uint32_t charge_cycles;
+};
+
+// Sizes documented in ESPNOW.md; the panel's copies assert the same values.
+static_assert(sizeof(EspNowBeaconPkt) == 26, "wire format");
+static_assert(sizeof(EspNowHelloPkt) == 8, "wire format");
+static_assert(sizeof(EspNowStatePkt) == 64, "wire format");
+static_assert(sizeof(EspNowCmdPkt) == 5, "wire format");
+static_assert(sizeof(EspNowJrnReqPkt) == 4, "wire format");
+static_assert(sizeof(EspNowJrnEventHdr) == 4, "wire format");
+static_assert(sizeof(EspNowJrnEndPkt) == 32, "wire format");
 
 // ---- config -----------------------------------------------------------
 
@@ -154,6 +204,17 @@ struct DisplayPeer {
 
 static DisplayPeer   s_peers[ESPNOW_MAX_DISPLAYS];
 static QueueHandle_t s_hello_q = NULL;   // 6-byte MACs from the recv callback
+
+// Requests that need FRAM (journal, maintenance record) are handed from the
+// recv callback, which runs in the WiFi driver task, to EspNowTask.
+enum : uint8_t { REQ_JOURNAL, REQ_MAINT };
+struct EspNowReq {
+    uint8_t mac[6];
+    uint8_t kind;
+    uint8_t req_id;
+    uint8_t arg;  // REQ_JOURNAL: event count; REQ_MAINT: subtype
+};
+static QueueHandle_t s_req_q = NULL;
 static uint8_t       s_own_mac[6];
 
 static bool add_encrypted_peer(const uint8_t mac[6]) {
@@ -214,24 +275,44 @@ static void peers_expire(void) {
 // never reaches this callback. See ESPNOW.md for what was verified about
 // unencrypted frames spoofing a peer's address.
 static void espnow_on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-    if (!g_espnow_config.enabled) return;
+    if (!g_espnow_config.enabled || len < 2 || data[1] != ESPNOW_PROTO_VERSION) return;
+    const uint8_t magic = data[0];
 
-    if (len == sizeof(EspNowHelloPkt)) {
+    if (magic == ESPNOW_MAGIC_HELLO && len == sizeof(EspNowHelloPkt)) {
         EspNowHelloPkt h;
         memcpy(&h, data, sizeof(h));
-        if (h.magic == ESPNOW_MAGIC_HELLO && h.proto_version == ESPNOW_PROTO_VERSION &&
-            memcmp(h.target, s_own_mac, 6) == 0 && s_hello_q != NULL)
+        if (memcmp(h.target, s_own_mac, 6) == 0 && s_hello_q != NULL)
             xQueueSend(s_hello_q, info->src_addr, 0);
         return;
     }
 
-    if (len != sizeof(EspNowCmdPkt) || xWebCommandQueue == NULL) return;
     if (memcmp(info->src_addr, BROADCAST_MAC, 6) == 0) return;
     if (!esp_now_is_peer_exist(info->src_addr)) return;
 
+    if (magic == ESPNOW_MAGIC_JRN_REQ && len == sizeof(EspNowJrnReqPkt)) {
+        EspNowJrnReqPkt r;
+        memcpy(&r, data, sizeof(r));
+        EspNowReq req = {};
+        memcpy(req.mac, info->src_addr, 6);
+        req.kind = REQ_JOURNAL;
+        req.req_id = r.req_id;
+        req.arg = r.count;
+        if (s_req_q != NULL) xQueueSend(s_req_q, &req, 0);
+        return;
+    }
+
+    if (magic != ESPNOW_MAGIC_CMD || len != sizeof(EspNowCmdPkt) || xWebCommandQueue == NULL) return;
     EspNowCmdPkt pkt;
     memcpy(&pkt, data, sizeof(pkt));
-    if (pkt.magic != ESPNOW_MAGIC_CMD || pkt.proto_version != ESPNOW_PROTO_VERSION) return;
+
+    if (pkt.cmd == ESPNOW_CMD_MAINT) {
+        EspNowReq req = {};
+        memcpy(req.mac, info->src_addr, 6);
+        req.kind = REQ_MAINT;
+        req.arg = pkt.reg;
+        if (s_req_q != NULL) xQueueSend(s_req_q, &req, 0);
+        return;
+    }
 
     WebCommand_t web_cmd = {};
     web_cmd.source = FLOG_SRC_ESPNOW;
@@ -410,6 +491,74 @@ static void fill_state(EspNowStatePkt &pkt) {
     pkt.irms          = power.rms_current;
     pkt.active_power_w = power.active_power;
     pkt.sta_ip        = wifi_net_sta_ip();
+    FramMetrics metrics = fram_metrics_get();
+    pkt.maint_due_mask = fram_maint_due_mask(&metrics, g_limits_config.maint_interval_hours);
+}
+
+// The ESP-NOW send queue is short; a burst of journal packets can hit NO_MEM.
+static esp_err_t send_paced(const uint8_t *mac, const uint8_t *data, size_t len) {
+    esp_err_t err = ESP_FAIL;
+    for (int attempt = 0; attempt < 10; attempt++) {
+        err = esp_now_send(mac, data, len);
+        if (err != ESP_ERR_ESPNOW_NO_MEM) break;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return err;
+}
+
+// Static: EspNowTask is the only caller, and its stack is small.
+static FramLogRecord s_jrn_batch[FLOG_READ_BATCH_MAX];
+static bool          s_jrn_ok[FLOG_READ_BATCH_MAX];
+static uint8_t       s_jrn_pkt[ESPNOW_MAX_PAYLOAD];
+static char          s_jrn_json[256];
+
+static void handle_journal_request(const EspNowReq &req) {
+    int want = req.arg < ESPNOW_JRN_MAX_EVENTS ? req.arg : ESPNOW_JRN_MAX_EVENTS;
+    EspNowJrnEventHdr hdr = {ESPNOW_MAGIC_JRN_EVENT, ESPNOW_PROTO_VERSION, req.req_id, 0};
+    const size_t max_json = sizeof(s_jrn_pkt) - sizeof(hdr);
+    uint8_t sent = 0;
+    uint32_t oldest = fram_log_oldest_seq();
+    uint32_t seq = fram_log_newest_seq();
+    while (seq != 0 && seq >= oldest && sent < want) {
+        int n = fram_log_read_batch(seq, FLOG_READ_BATCH_MAX, s_jrn_batch, s_jrn_ok);
+        if (n == 0) break;
+        for (int i = 0; i < n && sent < want; i++) {
+            if (!s_jrn_ok[i]) continue;
+            int jl = fram_log_record_json(&s_jrn_batch[i], s_jrn_json, sizeof(s_jrn_json));
+            if (jl <= 0 || (size_t)jl > max_json) continue;
+            hdr.idx = sent;
+            memcpy(s_jrn_pkt, &hdr, sizeof(hdr));
+            memcpy(s_jrn_pkt + sizeof(hdr), s_jrn_json, jl);
+            if (send_paced(req.mac, s_jrn_pkt, sizeof(hdr) + jl) == ESP_OK) sent++;
+        }
+        seq = (seq > (uint32_t)n) ? seq - n : 0;
+        esp_task_wdt_reset();
+    }
+
+    FramMetrics m = fram_metrics_get();
+    EspNowJrnEndPkt end = {};
+    end.magic          = ESPNOW_MAGIC_JRN_END;
+    end.proto_version  = ESPNOW_PROTO_VERSION;
+    end.req_id         = req.req_id;
+    end.count          = sent;
+    end.ts_now         = (uint32_t)time(NULL);
+    end.run_seconds    = m.total_run_seconds;
+    end.charge_seconds = m.total_charge_seconds;
+    end.starts         = m.start_count;
+    end.start_fails    = m.start_fail_count;
+    end.emergencies    = m.emergency_count;
+    end.charge_cycles  = m.charge_cycles;
+    send_paced(req.mac, (const uint8_t *)&end, sizeof(end));
+}
+
+static void handle_request(const EspNowReq &req) {
+    if (req.kind == REQ_JOURNAL) {
+        handle_journal_request(req);
+    } else if (req.kind == REQ_MAINT) {
+        // Same note the panel's HTTP path sends: recorded from its touchscreen.
+        if (!fram_log_maintenance(req.arg, "touch"))
+            SLOG_PRINTF("ESP-NOW: maintenance subtype %u rejected\n", req.arg);
+    }
 }
 
 void EspNowTask(void *pvParameters) {
@@ -430,8 +579,9 @@ void EspNowTask(void *pvParameters) {
     SLOG_PRINTF("ESP-NOW: own MAC=%s, name=\"%s\"\n", mac_str, wifiHostname);
 
     s_hello_q = xQueueCreate(8, 6);
+    s_req_q = xQueueCreate(4, sizeof(EspNowReq));
     esp_err_t err = esp_now_init();
-    if (s_hello_q == NULL || err != ESP_OK) {
+    if (s_hello_q == NULL || s_req_q == NULL || err != ESP_OK) {
         SLOG_PRINTF("EspNowTask: init failed: %s\n", esp_err_to_name(err));
         idle_forever();
     }
@@ -457,6 +607,8 @@ void EspNowTask(void *pvParameters) {
     for (;;) {
         uint8_t mac[6];
         while (xQueueReceive(s_hello_q, mac, 0) == pdTRUE) peer_touch(mac);
+        EspNowReq req;
+        if (xQueueReceive(s_req_q, &req, 0) == pdTRUE) handle_request(req);
 
         uint32_t now = uptime_ms();
         if (now - last_beacon_ms >= ESPNOW_BEACON_MS) {

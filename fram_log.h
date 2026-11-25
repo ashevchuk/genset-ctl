@@ -232,6 +232,13 @@ uint32_t fram_log_newest_seq(void);
 uint32_t fram_log_oldest_seq(void);
 bool     fram_log_read(uint32_t seq, FramLogRecord *out);
 
+// Reads up to n (<= FLOG_READ_BATCH_MAX) records newest-first, starting at
+// `from` and stopping at the oldest one, in a single I2CTask job instead of
+// one job (one I2CTask tick) per record. ok[i] is false for a record that
+// failed to read or verify. Returns how many seqs were covered, 0 on error.
+#define FLOG_READ_BATCH_MAX 16
+int fram_log_read_batch(uint32_t from, int n, FramLogRecord *out, bool *ok);
+
 // Erase event ring (and optionally metrics). Blocking, several seconds.
 void fram_log_wipe(bool metrics_too);
 
@@ -247,6 +254,11 @@ FramMetrics fram_metrics_get(void);
 // mask). idx must be < FLOG_MAINT_TYPES (unchecked — caller's responsibility,
 // same as every other maint_seconds[]/maint_ts[] access in this codebase).
 double fram_maint_hours_since(const FramMetrics *m, uint8_t idx);
+
+// Bit i set = FLOG_MAINT_* subtype i is overdue against interval_hours[i]
+// (0 = no interval). The one definition of "due" for the WS banner/mask and
+// the ESP-NOW state packet.
+uint8_t fram_maint_due_mask(const FramMetrics *m, const float *interval_hours);
 
 // Overwrite any subset of lifetime metrics (fields bitmask). Flushes to
 // FRAM immediately. Hour/count/peak values must be >= 0; hours are stored

@@ -8,13 +8,17 @@
 
 // ---- wire format: must match ../esp_now_link.cpp and ../ESPNOW.md -------
 
-#define ESPNOW_PROTO_VERSION 2
-#define ESPNOW_MAGIC_STATE   0xE5
-#define ESPNOW_MAGIC_CMD     0xEC
-#define ESPNOW_MAGIC_BEACON  0xEB
-#define ESPNOW_MAGIC_HELLO   0xE1
-#define ESPNOW_FLAG_WORKING  0x01
-#define ESPNOW_KEY_LEN       16
+#define ESPNOW_PROTO_VERSION   3
+#define ESPNOW_MAGIC_STATE     0xE5
+#define ESPNOW_MAGIC_CMD       0xEC
+#define ESPNOW_MAGIC_BEACON    0xEB
+#define ESPNOW_MAGIC_HELLO     0xE1
+#define ESPNOW_MAGIC_JRN_REQ   0xE7
+#define ESPNOW_MAGIC_JRN_EVENT 0xE8
+#define ESPNOW_MAGIC_JRN_END   0xE9
+#define ESPNOW_FLAG_WORKING    0x01
+#define ESPNOW_KEY_LEN         16
+#define ESPNOW_MAX_PAYLOAD     250
 
 static const uint8_t BROADCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
@@ -51,6 +55,7 @@ struct __attribute__((packed)) EspNowStatePkt {
     float    irms;
     float    active_power_w;
     uint32_t sta_ip;
+    uint8_t  maint_due_mask;
 };
 
 enum : uint8_t {
@@ -59,6 +64,7 @@ enum : uint8_t {
     ESPNOW_CMD_STOP,
     ESPNOW_CMD_REG_SET,
     ESPNOW_CMD_REG_TOGGLE,
+    ESPNOW_CMD_MAINT,
 };
 
 struct __attribute__((packed)) EspNowCmdPkt {
@@ -68,6 +74,43 @@ struct __attribute__((packed)) EspNowCmdPkt {
     uint8_t reg;
     uint8_t state;
 };
+
+struct __attribute__((packed)) EspNowJrnReqPkt {
+    uint8_t magic;
+    uint8_t proto_version;
+    uint8_t req_id;
+    uint8_t count;
+};
+
+struct __attribute__((packed)) EspNowJrnEventHdr {
+    uint8_t magic;
+    uint8_t proto_version;
+    uint8_t req_id;
+    uint8_t idx;
+};
+
+struct __attribute__((packed)) EspNowJrnEndPkt {
+    uint8_t  magic;
+    uint8_t  proto_version;
+    uint8_t  req_id;
+    uint8_t  count;
+    uint32_t ts_now;
+    uint32_t run_seconds;
+    uint32_t charge_seconds;
+    uint32_t starts;
+    uint32_t start_fails;
+    uint32_t emergencies;
+    uint32_t charge_cycles;
+};
+
+static_assert(sizeof(EspNowBeaconPkt) == 26, "wire format");
+static_assert(sizeof(EspNowHelloPkt) == 8, "wire format");
+static_assert(sizeof(EspNowStatePkt) == 64, "wire format");
+static_assert(sizeof(EspNowCmdPkt) == 5, "wire format");
+static_assert(sizeof(EspNowJrnReqPkt) == 4, "wire format");
+static_assert(sizeof(EspNowJrnEventHdr) == 4, "wire format");
+static_assert(sizeof(EspNowJrnEndPkt) == 32, "wire format");
+static_assert(ESPNOW_JRN_MAX_EVENTS <= 32, "s_jrn_have is a 32-bit mask");
 
 // Controller's state_name() strings indexed by its `state` enum value
 // (rtos_config.h) — ui.cpp's gen_state_label() matches on these strings.
@@ -218,8 +261,8 @@ static void on_state(const EspNowStatePkt &p, int rssi) {
                    ? STATE_NAMES[p.state_id] : "";
     bool working = p.flags & ESPNOW_FLAG_WORKING;
 
-    // Fields ESP-NOW does not carry (power_apparent/reactive/factor,
-    // maint_due_mask, uptime) keep whatever value they last had.
+    // Fields ESP-NOW does not carry (power_apparent/reactive/factor, uptime)
+    // keep whatever value they last had.
     portENTER_CRITICAL(&ws_gen_mux);
     g_gen.running         = working;
     g_gen.stopped         = !working;
@@ -250,28 +293,72 @@ static void on_state(const EspNowStatePkt &p, int rssi) {
     g_gen.alternator_temp = p.alternator_temp_c;
     g_gen.bat_voltage     = p.bat_v;
     g_gen.core_voltage    = p.core_v;
+    g_gen.maint_due_mask  = p.maint_due_mask;
     g_gen.rssi            = 0;   // WS RSSI = controller's own WiFi; it has none to report here
     g_gen.valid           = true;
     g_gen.last_update     = s_last_rx_ms;
     portEXIT_CRITICAL(&ws_gen_mux);
 }
 
-// Runs in the WiFi driver task (not an ISR); keep it short.
+// Journal answer (JrnEvent packets, then one JrnEnd) for the request in
+// flight. Written by the WiFi driver task, read by loop() only once
+// s_jrn_end_seen is set, after which the callback no longer writes it.
+static portMUX_TYPE s_jrn_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t  s_jrn_req_id = 0;
+static bool     s_jrn_waiting = false;
+static bool     s_jrn_end_seen = false;
+static uint32_t s_jrn_have = 0;  // bit idx = event idx arrived
+static char     s_jrn_json[ESPNOW_JRN_MAX_EVENTS][ESPNOW_MAX_PAYLOAD - sizeof(EspNowJrnEventHdr) + 1];
+static EspNowJrnEndPkt s_jrn_end;
+
+static void on_jrn_event(const uint8_t *data, int len) {
+    EspNowJrnEventHdr h;
+    memcpy(&h, data, sizeof(h));
+    int jl = len - (int)sizeof(h);
+    if (h.idx >= ESPNOW_JRN_MAX_EVENTS || jl <= 0 || jl >= (int)sizeof(s_jrn_json[0])) return;
+    portENTER_CRITICAL(&s_jrn_mux);
+    if (s_jrn_waiting && !s_jrn_end_seen && h.req_id == s_jrn_req_id) {
+        memcpy(s_jrn_json[h.idx], data + sizeof(h), jl);
+        s_jrn_json[h.idx][jl] = '\0';
+        s_jrn_have |= 1u << h.idx;
+    }
+    portEXIT_CRITICAL(&s_jrn_mux);
+}
+
+static void on_jrn_end(const uint8_t *data) {
+    EspNowJrnEndPkt e;
+    memcpy(&e, data, sizeof(e));
+    portENTER_CRITICAL(&s_jrn_mux);
+    if (s_jrn_waiting && !s_jrn_end_seen && e.req_id == s_jrn_req_id) {
+        s_jrn_end = e;
+        s_jrn_end_seen = true;
+    }
+    portEXIT_CRITICAL(&s_jrn_mux);
+}
+
+// Runs in the WiFi driver task (not an ISR); keep it short. Packets are told
+// apart by magic first: journal events vary in length and could otherwise
+// match a fixed-size packet's length.
 static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+    if (len < 2 || data[1] != ESPNOW_PROTO_VERSION) return;
     int rssi = info->rx_ctrl ? info->rx_ctrl->rssi : 0;
-    if (len == sizeof(EspNowBeaconPkt)) {
+    const uint8_t magic = data[0];
+    if (magic == ESPNOW_MAGIC_BEACON && len == sizeof(EspNowBeaconPkt)) {
         EspNowBeaconPkt b;
         memcpy(&b, data, sizeof(b));
-        if (b.magic == ESPNOW_MAGIC_BEACON && b.proto_version == ESPNOW_PROTO_VERSION)
-            on_beacon(info->src_addr, b, rssi);
+        on_beacon(info->src_addr, b, rssi);
         return;
     }
-    if (len != sizeof(EspNowStatePkt) || !s_gen_selected) return;
-    if (memcmp(info->src_addr, s_gen_mac, 6) != 0) return;
-    EspNowStatePkt p;
-    memcpy(&p, data, sizeof(p));
-    if (p.magic != ESPNOW_MAGIC_STATE || p.proto_version != ESPNOW_PROTO_VERSION) return;
-    on_state(p, rssi);
+    if (!s_gen_selected || memcmp(info->src_addr, s_gen_mac, 6) != 0) return;
+    if (magic == ESPNOW_MAGIC_STATE && len == sizeof(EspNowStatePkt)) {
+        EspNowStatePkt p;
+        memcpy(&p, data, sizeof(p));
+        on_state(p, rssi);
+    } else if (magic == ESPNOW_MAGIC_JRN_EVENT && len > (int)sizeof(EspNowJrnEventHdr)) {
+        on_jrn_event(data, len);
+    } else if (magic == ESPNOW_MAGIC_JRN_END && len == sizeof(EspNowJrnEndPkt)) {
+        on_jrn_end(data);
+    }
 }
 
 // Resend only start/start_retry/stop: the controller ignores a repeated
@@ -394,6 +481,78 @@ bool espnow_send_text(const char *msg) {
     esp_err_t err = esp_now_send(s_gen_mac, (const uint8_t *)&p, sizeof(p));
     Serial.printf("[ESPNOW] send \"%s\": %s\n", msg, esp_err_to_name(err));
     return err == ESP_OK;
+}
+
+bool espnow_send_maint(uint8_t subtype) {
+    if (!s_enabled || !s_gen_selected) return false;
+    EspNowCmdPkt p = {};
+    p.magic         = ESPNOW_MAGIC_CMD;
+    p.proto_version = ESPNOW_PROTO_VERSION;
+    p.cmd           = ESPNOW_CMD_MAINT;
+    p.reg           = subtype;
+    portENTER_CRITICAL(&s_retry_mux);
+    s_retry_due  = false;
+    s_retry_pkt  = p;
+    s_retry_left = 0;  // never resent: a lost ACK would record it twice
+    portEXIT_CRITICAL(&s_retry_mux);
+    esp_err_t err = esp_now_send(s_gen_mac, (const uint8_t *)&p, sizeof(p));
+    Serial.printf("[ESPNOW] send maintenance %u: %s\n", subtype, esp_err_to_name(err));
+    return err == ESP_OK;
+}
+
+bool espnow_journal_request(uint8_t count) {
+    if (!s_enabled || !s_gen_selected) return false;
+    // on_sent() can't tell packets apart; a journal request's ACK must not
+    // cancel a start/stop resend that is still pending.
+    portENTER_CRITICAL(&s_retry_mux);
+    bool cmd_pending = s_retry_left > 0;
+    portEXIT_CRITICAL(&s_retry_mux);
+    if (cmd_pending) return false;
+
+    if (count > ESPNOW_JRN_MAX_EVENTS) count = ESPNOW_JRN_MAX_EVENTS;
+    EspNowJrnReqPkt r = {ESPNOW_MAGIC_JRN_REQ, ESPNOW_PROTO_VERSION, 0, count};
+    portENTER_CRITICAL(&s_jrn_mux);
+    r.req_id = ++s_jrn_req_id;
+    s_jrn_have = 0;
+    s_jrn_end_seen = false;
+    s_jrn_waiting = true;
+    portEXIT_CRITICAL(&s_jrn_mux);
+    esp_err_t err = esp_now_send(s_gen_mac, (const uint8_t *)&r, sizeof(r));
+    Serial.printf("[ESPNOW] journal request %u: %s\n", r.req_id, esp_err_to_name(err));
+    if (err != ESP_OK) {
+        espnow_journal_cancel();
+        return false;
+    }
+    return true;
+}
+
+void espnow_journal_cancel(void) {
+    portENTER_CRITICAL(&s_jrn_mux);
+    s_jrn_waiting = false;
+    portEXIT_CRITICAL(&s_jrn_mux);
+}
+
+bool espnow_journal_take(EspNowJournalAnswer *out) {
+    portENTER_CRITICAL(&s_jrn_mux);
+    bool done = s_jrn_waiting && s_jrn_end_seen;
+    if (done) {
+        s_jrn_waiting = false;
+        out->count          = s_jrn_end.count < ESPNOW_JRN_MAX_EVENTS ? s_jrn_end.count : ESPNOW_JRN_MAX_EVENTS;
+        out->have           = s_jrn_have;
+        out->ts_now         = s_jrn_end.ts_now;
+        out->run_seconds    = s_jrn_end.run_seconds;
+        out->charge_seconds = s_jrn_end.charge_seconds;
+        out->starts         = s_jrn_end.starts;
+        out->start_fails    = s_jrn_end.start_fails;
+        out->emergencies    = s_jrn_end.emergencies;
+        out->charge_cycles  = s_jrn_end.charge_cycles;
+    }
+    portEXIT_CRITICAL(&s_jrn_mux);
+    return done;
+}
+
+const char *espnow_journal_event(int idx) {
+    return (idx >= 0 && idx < ESPNOW_JRN_MAX_EVENTS) ? s_jrn_json[idx] : "";
 }
 
 int espnow_list_generators(EspNowGenInfo *out, int max) {

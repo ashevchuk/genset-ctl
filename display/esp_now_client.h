@@ -30,6 +30,33 @@ bool espnow_client_active(void);
 // register index ("0".."15") for a toggle. Returns false if not sent.
 bool espnow_send_text(const char *msg);
 
+// Record a maintenance subtype (FLOG_MAINT_* index) on the controller, the
+// ESP-NOW equivalent of GET /maintenance. Never resent.
+bool espnow_send_maint(uint8_t subtype);
+
+// Journal over ESP-NOW: espnow_journal_request() asks for the newest `count`
+// events (capped at ESPNOW_JRN_MAX_EVENTS); poll espnow_journal_take() until
+// it returns true, then read the arrived events (bit i of `have`) with
+// espnow_journal_event(i) — each is the JSON object GET /log returns,
+// valid until the next request. Request returns false if not sent (no link,
+// or a start/stop resend still pending — try again later).
+#define ESPNOW_JRN_MAX_EVENTS 25
+struct EspNowJournalAnswer {
+    uint8_t  count;           // events the controller sent
+    uint32_t have;            // bit i: event i arrived
+    uint32_t ts_now;
+    uint32_t run_seconds;
+    uint32_t charge_seconds;
+    uint32_t starts;
+    uint32_t start_fails;
+    uint32_t emergencies;
+    uint32_t charge_cycles;
+};
+bool espnow_journal_request(uint8_t count);
+bool espnow_journal_take(EspNowJournalAnswer *out);
+void espnow_journal_cancel(void);
+const char *espnow_journal_event(int idx);
+
 // Generators heard recently, plus the selected one even if not heard.
 struct EspNowGenInfo {
     uint8_t mac[6];

@@ -1,17 +1,32 @@
 /*
- * journal.cpp — fetch generator event journal + metrics over HTTP.
+ * journal.cpp — fetch generator event journal + metrics over HTTP, or over
+ * ESP-NOW while that link carries the panel (../ESPNOW.md).
  * Runs from loop() (core 1); hands parsed rows to ui.cpp under display lock.
  */
 #include "journal.h"
 #include "config.h"
 #include "ui.h"
 #include "esp_bsp.h"
+#include "esp_now_client.h"
+#include "ws_client.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
 static volatile bool s_refresh_req = false;
 static volatile int8_t s_maint_pending = -1;  // -1 = nothing queued
+
+#define JOURNAL_ESPNOW_TIMEOUT_MS  4000
+#define JOURNAL_ESPNOW_SEND_TRIES  10
+#define JOURNAL_ESPNOW_RETRY_MS    300
+// The controller writes a maintenance event to FRAM on its next I2CTask
+// tick, after that tick's read jobs; reading the ring right away would miss it.
+#define JOURNAL_AFTER_MAINT_MS     300
+
+enum : uint8_t { JF_IDLE, JF_ESPNOW_SEND, JF_ESPNOW_WAIT };
+static uint8_t  s_fetch = JF_IDLE;
+static uint32_t s_fetch_at = 0;     // SEND: not before; WAIT: give up at
+static uint8_t  s_fetch_tries = 0;
 
 void journal_request_refresh(void) { s_refresh_req = true; }
 
@@ -220,9 +235,115 @@ static void show_status(const char *msg) {
     }
 }
 
-void journal_poll(bool allowed) {
+static void format_metrics_line(char *out, size_t n, double run_h, unsigned long starts,
+                                unsigned long fails, unsigned long emerg,
+                                unsigned long cycles, double charge_h) {
+    snprintf(out, n, "%.1f h  •  %lu starts (%lu fail)  •  %lu emerg  •  %lux charge %.1f h",
+             run_h, starts, fails, emerg, cycles, charge_h);
+}
+
+// ---------------------------------------------------------------------------
+// ESP-NOW path (non-blocking: the answer is collected by the radio callback)
+// ---------------------------------------------------------------------------
+static void espnow_fetch_start(uint32_t delay_ms) {
+    s_fetch = JF_ESPNOW_SEND;
+    s_fetch_at = millis() + delay_ms;
+    s_fetch_tries = 0;
+}
+
+static void espnow_send_pending_maint(void) {
+    if (s_maint_pending < 0) return;
+    uint8_t sub = (uint8_t)s_maint_pending;
+    s_maint_pending = -1;
+    char msg[64];
+    if (espnow_send_maint(sub))
+        snprintf(msg, sizeof(msg), "Recorded: %s", MAINT_TYPE_LABELS[sub]);
+    else
+        snprintf(msg, sizeof(msg), "ESP-NOW: maintenance not sent");
+    show_status(msg);
+}
+
+static void espnow_show_answer(const EspNowJournalAnswer &a) {
+    static JournalEntry entries[JOURNAL_MAX_EVENTS];
+    int n = 0, lost = 0;
+    JsonDocument doc;
+    for (int i = 0; i < a.count && n < JOURNAL_MAX_EVENTS; i++) {
+        if (!(a.have & (1u << i)) ||
+            deserializeJson(doc, espnow_journal_event(i)) != DeserializationError::Ok) {
+            lost++;
+            continue;
+        }
+        fill_entry(doc.as<JsonObjectConst>(), a.ts_now, &entries[n++]);
+    }
+    char metrics_line[144];
+    format_metrics_line(metrics_line, sizeof(metrics_line), a.run_seconds / 3600.0,
+                        a.starts, a.start_fails, a.emergencies, a.charge_cycles,
+                        a.charge_seconds / 3600.0);
+    Serial.printf("[JRN] Loaded %d events via ESP-NOW (%d lost)\n", n, lost);
+    if (bsp_display_lock(100)) {
+        ui_journal_show(entries, n, metrics_line);
+        if (lost) {
+            char msg[48];
+            snprintf(msg, sizeof(msg), "%d of %d events lost on ESP-NOW", lost, a.count);
+            ui_journal_set_status(msg);
+        }
+        bsp_display_unlock();
+    }
+}
+
+static void espnow_fetch_step(void) {
+    if (s_fetch == JF_ESPNOW_SEND) {
+        if ((int32_t)(millis() - s_fetch_at) < 0) return;
+        if (!espnow_client_active()) {
+            s_fetch = JF_IDLE;
+            show_status("no link to generator");
+            return;
+        }
+        if (!espnow_journal_request(JOURNAL_MAX_EVENTS)) {
+            if (++s_fetch_tries >= JOURNAL_ESPNOW_SEND_TRIES) {
+                s_fetch = JF_IDLE;
+                show_status("ESP-NOW: request not sent");
+            } else {
+                s_fetch_at = millis() + JOURNAL_ESPNOW_RETRY_MS;
+            }
+            return;
+        }
+        s_fetch = JF_ESPNOW_WAIT;
+        s_fetch_at = millis() + JOURNAL_ESPNOW_TIMEOUT_MS;
+        return;
+    }
+    EspNowJournalAnswer a;
+    if (espnow_journal_take(&a)) {
+        s_fetch = JF_IDLE;
+        espnow_show_answer(a);
+    } else if ((int32_t)(millis() - s_fetch_at) >= 0) {
+        espnow_journal_cancel();
+        s_fetch = JF_IDLE;
+        Serial.println("[JRN] ESP-NOW journal: no answer");
+        show_status("ESP-NOW: no answer");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+void journal_poll(bool wifi_ok, bool ota_active) {
+    if (ota_active) return;
+    if (s_fetch != JF_IDLE) {
+        espnow_fetch_step();
+        return;
+    }
     if (!s_refresh_req) return;
-    if (!allowed) return;   // keep the request pending until WiFi is back
+
+    // ESP-NOW while it is what keeps the panel's data fresh, i.e. WS is silent.
+    if (espnow_client_active() && !ws_client_fresh()) {
+        s_refresh_req = false;
+        bool had_maint = s_maint_pending >= 0;
+        espnow_send_pending_maint();
+        espnow_fetch_start(had_maint ? JOURNAL_AFTER_MAINT_MS : 0);
+        return;
+    }
+    if (!wifi_ok) return;   // keep the request pending until a link is back
     if (strlen(g_config.gen_host) == 0) {
         s_refresh_req = false;
         s_maint_pending = -1;
@@ -261,6 +382,12 @@ void journal_poll(bool allowed) {
             char msg[64];
             snprintf(msg, sizeof(msg), "Recorded: %s", MAINT_TYPE_LABELS[sub]);
             show_status(msg);
+        } else if (espnow_client_active()) {
+            Serial.printf("[JRN] /maintenance failed: %s, using ESP-NOW\n", err);
+            s_maint_pending = (int8_t)sub;
+            espnow_send_pending_maint();
+            espnow_fetch_start(JOURNAL_AFTER_MAINT_MS);
+            return;
         } else {
             Serial.printf("[JRN] /maintenance failed: %s\n", err);
             show_status(err);
@@ -271,15 +398,13 @@ void journal_poll(bool allowed) {
     {
         DynamicJsonDocument doc(2048);
         if (http_get_json(http, "/metrics", doc, err, sizeof(err))) {
-            snprintf(metrics_line, sizeof(metrics_line),
-                     "%.1f h  •  %lu starts (%lu fail)  •  %lu emerg  •  "
-                     "%lux charge %.1f h",
-                     (double)(doc["run_hours"] | 0.0f),
-                     (unsigned long)(doc["starts"] | 0UL),
-                     (unsigned long)(doc["start_fails"] | 0UL),
-                     (unsigned long)(doc["emergencies"] | 0UL),
-                     (unsigned long)(doc["charge_cycles"] | 0UL),
-                     (double)(doc["charge_hours"] | 0.0f));
+            format_metrics_line(metrics_line, sizeof(metrics_line),
+                                (double)(doc["run_hours"] | 0.0f),
+                                (unsigned long)(doc["starts"] | 0UL),
+                                (unsigned long)(doc["start_fails"] | 0UL),
+                                (unsigned long)(doc["emergencies"] | 0UL),
+                                (unsigned long)(doc["charge_cycles"] | 0UL),
+                                (double)(doc["charge_hours"] | 0.0f));
         } else {
             Serial.printf("[JRN] /metrics failed: %s\n", err);
         }
@@ -291,6 +416,11 @@ void journal_poll(bool allowed) {
         snprintf(path, sizeof(path), "/log?count=%d", JOURNAL_MAX_EVENTS);
         DynamicJsonDocument doc(16384);
         if (!http_get_json(http, path, doc, err, sizeof(err))) {
+            if (espnow_client_active()) {
+                Serial.printf("[JRN] /log failed: %s, using ESP-NOW\n", err);
+                espnow_fetch_start(0);
+                return;
+            }
             Serial.printf("[JRN] /log failed: %s\n", err);
             show_status(err);
             return;

@@ -656,9 +656,9 @@ void loop() {
         ota_server.handleClient();
     }
 
-    // Journal fetch (blocks this loop iteration for the HTTP round-trips;
-    // LVGL keeps running in its own task)
-    journal_poll(wifi_ok && !ota_active);
+    // Journal fetch (the HTTP path blocks this loop iteration for its
+    // round-trips; LVGL keeps running in its own task)
+    journal_poll(wifi_ok, ota_active);
 
     // Check pending WiFi scan
     if (scan_pending) {

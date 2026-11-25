@@ -4,6 +4,8 @@
 
 ESP-NOW is a direct, infrastructure-free radio link between generator controllers and display panels (`display/`). It is a fallback for when the WebSocket path through the WiFi router/AP is unavailable — it does **not** extend range or replace normal WiFi coverage. It rides on the same WiFi radio both devices already use for their STA connection.
 
+**Protocol v3 (2026-11-25):** v2 plus the journal over ESP-NOW (request, one packet per event, closing packet with the lifetime metrics), a maintenance-record command and `maint_due_mask` in the state packet. A v2 device and a v3 device ignore each other's packets, so the controller and the panel are updated together.
+
 **Protocol v2 (2026-10-16):**
 - One **fleet key** for the whole installation, like a WiFi passphrase.
 - Each controller announces itself by name (`wifi.json` `"hostname"`) in a broadcast beacon.
@@ -123,14 +125,14 @@ The beacon name is the existing top-level `"hostname"` (e.g. `gen-ctl-test`) —
 
 ## Wire format
 
-Fixed-layout `__attribute__((packed))` structs, duplicated by hand in `esp_now_link.cpp` and `display/esp_now_client.cpp`. **This file is the source of truth**; nothing enforces the two copies matching at compile time. `proto_version` is `2` in every packet; a v1 device ignores v2 packets and vice versa. Packets are told apart by length, then magic. All are under the 250-byte ESP-NOW v1 payload cap.
+Fixed-layout `__attribute__((packed))` structs, duplicated by hand in `esp_now_link.cpp` and `display/esp_now_client.cpp`. **This file is the source of truth**; each side `static_assert`s the sizes below, but nothing checks that field order matches. `proto_version` is `3` in every packet; devices on another version ignore each other. Packets are told apart by magic first, then length: a journal event packet varies in length and could otherwise match a fixed-size packet. All are under the 250-byte ESP-NOW v1 payload cap.
 
 ### `EspNowBeaconPkt` — controller → broadcast, unencrypted, every 2 s (26 bytes)
 
 | Field | Type | Notes |
 |---|---|---|
 | `magic` | `uint8_t` | `0xEB` |
-| `proto_version` | `uint8_t` | `2` |
+| `proto_version` | `uint8_t` | `3` |
 | `name` | `char[24]` | `wifi.json` `"hostname"`, NUL-padded |
 
 ### `EspNowHelloPkt` — display → broadcast, unencrypted (8 bytes)
@@ -138,21 +140,21 @@ Fixed-layout `__attribute__((packed))` structs, duplicated by hand in `esp_now_l
 | Field | Type | Notes |
 |---|---|---|
 | `magic` | `uint8_t` | `0xE1` |
-| `proto_version` | `uint8_t` | `2` |
+| `proto_version` | `uint8_t` | `3` |
 | `target` | `uint8_t[6]` | STA MAC of the controller being joined |
 
 - **Display cadence:** every 2 s until state arrives, then every 30 s as a keepalive.
 - **Controller side:** a matching hello adds or refreshes the sender as an encrypted peer. Peers silent for 120 s are dropped.
 - **After a controller reboot:** the controller's peer table is empty, so the display stops receiving state and goes back to 2 s hellos, rejoining within seconds (seen live).
 
-### `EspNowStatePkt` — controller → each joined display, encrypted, 1 Hz (63 bytes)
+### `EspNowStatePkt` — controller → each joined display, encrypted, 1 Hz (64 bytes)
 
 Values use the same sources and units as `ReportTask`'s WS `value` section.
 
 | Field | Type | WS equivalent |
 |---|---|---|
 | `magic` | `uint8_t` | `0xE5` |
-| `proto_version` | `uint8_t` | `2` |
+| `proto_version` | `uint8_t` | `3` |
 | `state_id` | `uint8_t` | `state` enum (`rtos_config.h`); display maps it back to `state_name()` strings |
 | `flags` | `uint8_t` | bit 0 = `!is_not_working()` (`switch.run`) |
 | `reg_inputs` | `uint8_t` | raw `shift_reg_in` |
@@ -171,21 +173,61 @@ Values use the same sources and units as `ReportTask`'s WS `value` section.
 | `irms` | `float` | `IRMS` |
 | `active_power_w` | `float` | `POWER_ACTIVE` |
 | `sta_ip` | `uint32_t` | controller's STA IPv4 as `IPAddress` stores it, 0 if not connected |
+| `maint_due_mask` | `uint8_t` | `MAINT_DUE_MASK` (bit i = `FLOG_MAINT_*` subtype i overdue; same `fram_maint_due_mask()` as WS) |
 
-- **Not carried:** apparent/reactive power, power factor, energy counters, `MAINT_DUE_MASK`, uptime. They keep their last WS value on the display.
+- **Not carried:** apparent/reactive power, power factor, energy counters, uptime. They keep their last WS value on the display.
 
 ### `EspNowCmdPkt` — display → controller, encrypted, on demand (5 bytes)
 
 | Field | Type | Notes |
 |---|---|---|
 | `magic` | `uint8_t` | `0xEC` |
-| `proto_version` | `uint8_t` | `2` |
-| `cmd` | `uint8_t` | `START`=0, `START_RETRY`=1, `STOP`=2, `REG_SET`=3, `REG_TOGGLE`=4 |
-| `reg` | `uint8_t` | for `REG_SET`/`REG_TOGGLE`: raw register index 0-15 |
+| `proto_version` | `uint8_t` | `3` |
+| `cmd` | `uint8_t` | `START`=0, `START_RETRY`=1, `STOP`=2, `REG_SET`=3, `REG_TOGGLE`=4, `MAINT`=5 |
+| `reg` | `uint8_t` | for `REG_SET`/`REG_TOGGLE`: raw register index 0-15; for `MAINT`: `FLOG_MAINT_*` subtype |
 | `state` | `uint8_t` | for `REG_SET`: 0/1 |
 
 - **On the controller:** each command becomes a `WebCommand_t` on `xWebCommandQueue` with `source = FLOG_SRC_ESPNOW` (the journal shows `"espnow"`).
-- **On the display:** it sends `START`/`START_RETRY`/`STOP`/`REG_TOGGLE`; `REG_SET` is accepted but unused.
+- **`MAINT`** records a maintenance event with note `touch`, the same as the panel's `GET /maintenance?type=<name>&note=touch`. It is handed to `EspNowTask` (FRAM access), not to `xWebCommandQueue`. The panel never resends it (a lost ACK would record it twice), same as `REG_TOGGLE`.
+- **On the display:** it sends `START`/`START_RETRY`/`STOP`/`REG_TOGGLE`/`MAINT`; `REG_SET` is accepted but unused.
+
+### `EspNowJrnReqPkt` — display → controller, encrypted, on demand (4 bytes)
+
+| Field | Type | Notes |
+|---|---|---|
+| `magic` | `uint8_t` | `0xE7` |
+| `proto_version` | `uint8_t` | `3` |
+| `req_id` | `uint8_t` | echoed in the answer, so a late answer to an older request is dropped |
+| `count` | `uint8_t` | newest events wanted, capped at 25 |
+
+Accepted only from joined (encrypted) peers. `EspNowTask` reads the ring with `fram_log_read_batch()` and answers with up to `count` event packets, then one end packet. The panel sends it only while WS is silent and ESP-NOW is active, or after its HTTP `/log` (or `/maintenance`) failed with ESP-NOW active; otherwise the journal still comes over HTTP. After a `MAINT` the panel waits 300 ms before requesting: `I2CTask` runs its read jobs before it writes queued events to FRAM, so an immediate read misses the new record.
+
+### `EspNowJrnEvent` — controller → display, encrypted, one per event (5–250 bytes)
+
+| Field | Type | Notes |
+|---|---|---|
+| `magic` | `uint8_t` | `0xE8` |
+| `proto_version` | `uint8_t` | `3` |
+| `req_id` | `uint8_t` | from the request |
+| `idx` | `uint8_t` | 0 = newest |
+| `json` | bytes | the event's JSON object exactly as `GET /log` returns it (`fram_log_record_json()`), not NUL-terminated; an event longer than 246 bytes is skipped (the longest measured is ~150) |
+
+The panel parses each one with the same `fill_entry()` as the HTTP path, so both paths render identically and new event types need no wire change.
+
+### `EspNowJrnEndPkt` — controller → display, encrypted, closes an answer (32 bytes)
+
+| Field | Type | Notes |
+|---|---|---|
+| `magic` | `uint8_t` | `0xE9` |
+| `proto_version` | `uint8_t` | `3` |
+| `req_id` | `uint8_t` | from the request |
+| `count` | `uint8_t` | event packets sent; any `idx` below it that did not arrive is reported as lost |
+| `ts_now` | `uint32_t` | `/log` `ts_now`, for event ages |
+| `run_seconds`, `charge_seconds`, `starts`, `start_fails`, `emergencies`, `charge_cycles` | `uint32_t` each | the `/metrics` fields the journal tab shows |
+
+The panel gives up after 4 s without an end packet ("ESP-NOW: no answer").
+
+**Verified live 2026-11-25** (test rig + panel, both APs switched off by hand): four journal loads over ESP-NOW, 25 events each, none lost; a Record tap reached the controller (`maintenance air_filter @ 551.0h, note touch` in FRAM), the panel's overdue bar cleared from the state packet's mask, and the refreshed journal showed the new record. After WiFi came back the journal loaded over HTTP again.
 
 ---
 

@@ -353,13 +353,23 @@ static esp_err_t log_handler(httpd_req_t *req) {
     out += "\",\"events\":[";
 
     char jbuf[256];
-    FramLogRecord rec;
+    FramLogRecord batch[FLOG_READ_BATCH_MAX];
+    bool batch_ok[FLOG_READ_BATCH_MAX];
+    int batch_n = 0, batch_i = 0;
     bool first = true;
     for (uint32_t seq = from; seq >= oldest && seq > after && want > 0 && scanned < max_scan; seq--) {
+        if (batch_i >= batch_n) {
+            batch_n = fram_log_read_batch(seq, FLOG_READ_BATCH_MAX, batch, batch_ok);
+            batch_i = 0;
+            if (batch_n == 0) break;  // the I2C job itself failed; retrying per seq would only stall
+        }
         scanned++;
         scanned_to = seq;
         if ((scanned & 7) == 0) wdt_reset_if_subscribed();
-        if (!fram_log_read(seq, &rec)) continue;
+        const FramLogRecord &rec = batch[batch_i];
+        bool rec_ok = batch_ok[batch_i];
+        batch_i++;
+        if (!rec_ok) continue;
         if (filter && strcmp(fram_log_group_name(rec.type), group) != 0) continue;
         if (fram_log_record_json(&rec, jbuf, sizeof(jbuf)) <= 0) continue;
         if (!first) out += ",";

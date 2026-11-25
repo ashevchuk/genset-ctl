@@ -1,7 +1,8 @@
 /*
  * journal.h — FRAM event journal viewer (data side).
- * Fetches /log and /metrics from the generator controller over HTTP,
- * formats entries into plain structs; ui.cpp renders them.
+ * Fetches /log and /metrics from the generator controller over HTTP, or the
+ * same events over ESP-NOW while WS is silent and ESP-NOW is up; formats
+ * entries into plain structs; ui.cpp renders them.
  */
 #pragma once
 #include <Arduino.h>
@@ -41,7 +42,6 @@ void journal_request_refresh(void);
 // figures update too). Safe to call from LVGL callbacks.
 void journal_request_maintenance(uint8_t subtype);
 
-// Perform the pending fetch if any. Call from loop() (may block for the
-// duration of two HTTP GETs to the controller). `allowed` = WiFi up and
-// no OTA in progress.
-void journal_poll(bool allowed);
+// Perform the pending fetch if any. Call from every loop() pass: the HTTP
+// path blocks for its GETs, the ESP-NOW path advances one step per call.
+void journal_poll(bool wifi_ok, bool ota_active);

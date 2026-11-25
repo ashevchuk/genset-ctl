@@ -11,10 +11,10 @@
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
-PROJECT="${PROJECT_DIR##*/}"
 
 BUILD_DIR=${SCRIPT_DIR}/build_nodebug
-BIN=${BUILD_DIR}/${PROJECT}-idf.bin
+# project() name in idf/CMakeLists.txt, not the checkout directory name.
+BIN=${BUILD_DIR}/esp32-gen-ctl-ai-rtos-idf.bin
 
 if [ -f "${PROJECT_DIR}/host" ]; then
     IP=$(cat "${PROJECT_DIR}/host")

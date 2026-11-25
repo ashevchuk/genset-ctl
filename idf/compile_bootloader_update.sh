@@ -12,8 +12,6 @@ set -uo pipefail
 # (flag-off) build immediately — see CLAUDE.md's OTA-rollback section.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PROJECT="$(basename "$PROJECT_DIR")"
 
 # Same EXTRA_CPPFLAGS mechanism compile_nodebug.sh uses — see its own
 # comment for why this is a global -D via ESP-IDF's project.cmake rather

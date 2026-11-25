@@ -2,8 +2,6 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PROJECT="$(basename "$PROJECT_DIR")"
 
 # .ino/arduino-builder retired 2026-09-23 — main/<project>.cpp is real,
 # hand-maintained C++ source now (see the note at its own top), no longer

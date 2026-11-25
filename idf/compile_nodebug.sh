@@ -12,8 +12,6 @@ set -uo pipefail
 # the compile-time options that do.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PROJECT="$(basename "$PROJECT_DIR")"
 
 # Forces the flag globally without touching debug.h: EXTRA_CPPFLAGS is
 # ESP-IDF's own project.cmake mechanism (read once, applied as a

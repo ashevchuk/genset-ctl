@@ -13,20 +13,20 @@
 #include "shiftreg.h"
 #include "smoothed_safe.h"
 #include "debug.h"
-#include <Arduino.h>
-#include <WiFi.h>
-#include <WebSockets4WebServer.h>
+#include <stdint.h>
+#include <stddef.h>
+#include "uptime.h"
+#include "wifi_net.h"
+#include "http_server.h"
 #include <ArduinoJson.h>
 #include <esp_task_wdt.h>
 #include <esp_ota_ops.h>
 #include <esp_heap_caps.h>
-#include <exception>
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 #include "datetime.h"
 
 // ---- externs into esp32-gen-ctl-ai-rtos.cpp's own globals ------------------
-extern WebSockets4WebServer wsServer;
 extern SmoothedSafe<double> adc_1_0;
 extern SmoothedSafe<double> adc_1_1;
 extern SmoothedSafe<double> adc_1_2;
@@ -39,38 +39,6 @@ const char *resetReasonName(esp_reset_reason_t r);
 bool is_not_working(void);
 uint32_t rtc_now_unixtime(void);
 extern DateTime start;  // boot-time timestamp, set once in setup()
-
-// arduino-esp32's own initArduino() (esp32-hal-misc.c) auto-confirms a
-// pending OTA image at the very start of setup() — via a weak verifyOta()
-// hook that defaults to returning true — whenever CONFIG_APP_ROLLBACK_ENABLE
-// is defined. Now that CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is actually on
-// (sdkconfig.defaults), that block compiles in (ESP-IDF's sdkconfig.h
-// aliases the old Kconfig name to the new one, confirmed live 2026-09-25),
-// and without deferring it, it would confirm the image healthy within the
-// first second of boot — making the 10-minute soak below a no-op.
-// Overriding the OTHER weak hook, verifyRollbackLater(), unconditionally
-// true tells initArduino() to skip its own immediate check entirely and
-// defer to this file's own OTA_CONFIRM_HEALTHY_AFTER_MS logic below.
-//
-// MUST be extern "C" — esp32-hal-misc.c is a plain .c file, so its own
-// `bool verifyRollbackLater() __attribute__((weak));` declaration has C
-// linkage (the bare name, no mangling). A same-signature C++ definition
-// here without extern "C" gets its own mangled name instead — a
-// completely different linker symbol that never overrides the weak one.
-// Found live 2026-09-25 the hard way: an unqualified C++ override sat in
-// the binary the whole time (confirmed via `nm` — it showed up as its own
-// symbol while verifyRollbackLater/verifyOta stayed the original *weak*
-// symbols, meaning arduino-esp32's stock immediate-confirm-at-boot
-// behavior was silently still in effect this entire session, regardless
-// of what this file's own override said) — every OTA image, including a
-// deliberately crash-test one, was actually getting marked
-// ESP_OTA_IMG_VALID within its first millisecond of boot, well before
-// setup() or any 10-minute/test soak ever ran, which is also why nothing
-// ever rejected a bad image on a later boot: by then it had genuinely
-// been VALID (not PENDING_VERIFY/ABORTED) since attempt #1.
-extern "C" bool verifyRollbackLater() {
-    return true;
-}
 
 // Deferring confirmation (above) only covers the FIRST boot attempt of a
 // pending image — it does NOT, by itself, protect against a crash before
@@ -220,8 +188,8 @@ void ReportTask(void *pvParameters) {
                 stuck_since_ms = 0;
                 i2c_stuck_logged = false;
             } else {
-                if (stuck_since_ms == 0) stuck_since_ms = millis();
-                uint32_t stuck_ms = (uint32_t)millis() - stuck_since_ms;
+                if (stuck_since_ms == 0) stuck_since_ms = uptime_ms();
+                uint32_t stuck_ms = uptime_ms() - stuck_since_ms;
                 if (stuck_ms >= 5000 && !i2c_stuck_logged) {
                     i2c_stuck_logged = true;
                     FramLogRecord r = {};
@@ -252,7 +220,7 @@ void ReportTask(void *pvParameters) {
         // Heap health log every 60 s, for watching the long-term trend
         // before deciding whether the recurring bad_alloc crashes need an
         // architecture change (away from Async*) or are a fixable leak.
-        // maxblk (ESP.getMaxAllocHeap()) has repeatedly read a suspiciously
+        // maxblk (largest free internal-RAM block, MALLOC_CAP_INTERNAL) has repeatedly read a suspiciously
         // constant value (e.g. 36852) across wildly different real heap
         // states and even at the exact moment allocations were failing —
         // it can't be trusted. largest8bit (heap_caps_get_largest_free_block)
@@ -262,14 +230,10 @@ void ReportTask(void *pvParameters) {
         // side by side for now to keep confirming the mismatch.
         if (++heap_tick >= 60) {
             heap_tick = 0;
-            unsigned ws_clients_now = 0;
-            if (TAKE_MUTEX(xWsMutex)) {
-                ws_clients_now = (unsigned)wsServer.connectedClients();
-                GIVE_MUTEX(xWsMutex);
-            }
+            unsigned ws_clients_now = (unsigned)http_ws_client_count();
             SLOG_PRINTF("[HEAP] free=%u min=%u maxblk=%u largest8bit=%u ws=%u\n",
-                          ESP.getFreeHeap(), ESP.getMinFreeHeap(),
-                          ESP.getMaxAllocHeap(),
+                          heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                          heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
                           ws_clients_now);
             if (!heap_caps_check_integrity_all(true)) {
@@ -277,12 +241,10 @@ void ReportTask(void *pvParameters) {
             }
         }
 
+        http_ws_tick();
+
         // Only send if there are connected clients
-        unsigned ws_clients_for_send = 0;
-        if (TAKE_MUTEX(xWsMutex)) {
-            ws_clients_for_send = (unsigned)wsServer.connectedClients();
-            GIVE_MUTEX(xWsMutex);
-        }
+        unsigned ws_clients_for_send = (unsigned)http_ws_client_count();
         if (ws_clients_for_send > 0) {
             // Get current state atomically
             SensorData_t sensors;
@@ -330,7 +292,7 @@ void ReportTask(void *pvParameters) {
             val["ADC1_2"] = serialized(ws_fmt_num(adc_2_2.get() / 1000, 2));
             val["HEAD_TEMP"] = serialized(ws_fmt_num(sensors.head_temp, 1));
             val["RPM"] = sensors.rpm;
-            val["RSSI"] = WiFi.RSSI();
+            val["RSSI"] = wifi_net_rssi();
             val["VRMS"] = serialized(ws_fmt_num(power.rms_voltage, 2));
             val["IRMS"] = serialized(ws_fmt_num(power.rms_current, 4));
             val["POWER_ACTIVE"] = serialized(ws_fmt_num(power.active_power, 3));
@@ -405,8 +367,8 @@ void ReportTask(void *pvParameters) {
                 val["MAINT_DUE"] = maint_due_buf;
                 val["MAINT_DUE_MASK"] = due_mask;
             }
-            val["FREE_HEAP"] = ESP.getFreeHeap();
-            val["MIN_HEAP"]  = ESP.getMinFreeHeap();
+            val["FREE_HEAP"] = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+            val["MIN_HEAP"]  = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
 
             // Date section
             JsonObject date = doc["date"].to<JsonObject>();
@@ -426,49 +388,13 @@ void ReportTask(void *pvParameters) {
             if (written >= sizeof(ws_report_buf)) {
                 SLOG_PRINTLN("[HEAP] WS report JSON truncated - buffer too small, broadcast skipped");
             } else {
-                // WebSocketsServer's broadcastTXT() is plain synchronous code,
-                // not the allocator-heavy AsyncTCP path that used to throw
-                // std::bad_alloc here — but keep the try/catch anyway, it's
-                // cheap insurance and this is exactly the call site that
-                // caused today's whole investigation.
-                // xWsMutex: broadcastTXT() walks the same internal client
-                // list that WebTask's wsServer.loop() and the /ws accept
-                // hook touch. Skip the send when the lock is not held —
-                // broadcasting anyway reopens the client->tcp race (see
-                // xWsMutex at its declaration). WebTask can hold the lock
-                // for a header read (WEBSOCKETS_TCP_TIMEOUT, 5s), so a
-                // 100ms timeout here is a real miss, not a theoretical one.
-                if (!TAKE_MUTEX(xWsMutex)) {
-                    SLOG_PRINTLN("[WS] xWsMutex timeout - broadcast skipped");
-                } else {
-                    try {
-                        wsServer.broadcastTXT(ws_report_buf, written);
-                    } catch (const std::exception &e) {
-                        SLOG_PRINTF("[HEAP] wsServer.broadcastTXT() threw %s - wifi_status=%d rssi=%d ip=%s ws_clients=%u free=%u maxblk=%u - broadcast skipped\n",
-                                      e.what(), (int)WiFi.status(), WiFi.RSSI(),
-                                      WiFi.localIP().toString().c_str(), (unsigned)wsServer.connectedClients(),
-                                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-                        if (!heap_caps_check_integrity_all(true)) {
-                            SLOG_PRINTLN("[HEAP] CORRUPTION DETECTED (at wsServer.broadcastTXT() failure)");
-                        }
-                    } catch (...) {
-                        SLOG_PRINTF("[HEAP] wsServer.broadcastTXT() threw non-std exception - wifi_status=%d rssi=%d ip=%s ws_clients=%u free=%u maxblk=%u - broadcast skipped\n",
-                                      (int)WiFi.status(), WiFi.RSSI(),
-                                      WiFi.localIP().toString().c_str(), (unsigned)wsServer.connectedClients(),
-                                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-                        if (!heap_caps_check_integrity_all(true)) {
-                            SLOG_PRINTLN("[HEAP] CORRUPTION DETECTED (at wsServer.broadcastTXT() failure)");
-                        }
-                    }
-                    GIVE_MUTEX(xWsMutex);
+                // Copies the report and sends it from the httpd task, so a
+                // stalled client can't block ReportTask (TWDT history).
+                if (!http_ws_broadcast(ws_report_buf, written)) {
+                    SLOG_PRINTLN("[WS] previous broadcast still in progress - report skipped");
                 }
             }
         }
-
-        // No wsServer-equivalent of ws.cleanupClients() needed: WebSocketsServer
-        // reaps dead client sockets internally as part of wsServer.loop()
-        // (called every WebTask iteration), it doesn't need an external nudge
-        // the way AsyncWebSocket's lwIP-PCB bookkeeping did.
 
         // Feed watchdog
         esp_task_wdt_reset();

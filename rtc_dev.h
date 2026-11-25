@@ -1,5 +1,5 @@
 /*
- * rtc_dev.h — minimal DS3231 driver, direct Wire access.
+ * rtc_dev.h — minimal DS3231 driver, direct I2C access (i2c_bus.h).
  *
  * Replaces RTClib's RTC_DS3231 (which goes through an extra Adafruit_BusIO
  * layer) with a thin driver that only implements the handful of operations
@@ -8,14 +8,15 @@
  * own DateTime (datetime.h — a straight port of RTClib's, pure calendar
  * math, no I2C) as the value type.
  *
- * Every call does exactly one bounded I2C transaction; the global
- * Wire.setTimeOut(50) (set in setup()) bounds how long that transaction can
+ * Every call does exactly one bounded I2C transaction; the bus-wide
+ * 50 ms timeout (i2c_bus.cpp) bounds how long that transaction can
  * block. Callers should hold xI2CMutex around these calls, same as before.
  */
 #ifndef RTC_DEV_H
 #define RTC_DEV_H
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include "datetime.h"
 
 class RtcDs3231 {

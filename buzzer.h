@@ -1,6 +1,7 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 
 // Buzzer default timing constants (in milliseconds)
 #define BUZZER_DEFAULT_DURATION_MS   100

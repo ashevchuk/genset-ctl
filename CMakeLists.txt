@@ -12,12 +12,17 @@ idf_component_register(
         "buzzer.cpp"
         "config.cpp"
         "datetime.cpp"
+        "debug_telnet.cpp"
         "encoder.cpp"
         "esp_now_link.cpp"
         "fram_dev.cpp"
         "fram_log.cpp"
         "gen_discovery.cpp"
         "i2c.cpp"
+        "ffat.cpp"
+        "i2c_bus.cpp"
+        "http_server.cpp"
+        "multipart.cpp"
         "ina233_dev.cpp"
         "mcp39f511a_dev.cpp"
         "mcp9600_dev.cpp"
@@ -32,9 +37,10 @@ idf_component_register(
         "tacho.cpp"
         "update_mode.cpp"
         "web.cpp"
+        "wifi_net.cpp"
         "wifi_setup.cpp"
     INCLUDE_DIRS "."
-    REQUIRES arduino-esp32 esp_driver_pcnt esp_driver_uart SSD1306Ascii ArduinoJson AsyncWiFiMulti Smoothed PubSubClient WebSockets WebServer WiFiManager app_update esp_partition wear_levelling espcoredump lwip spi_flash esp_wifi
+    REQUIRES esp_driver_pcnt esp_driver_uart SSD1306Ascii ArduinoJson Smoothed mqtt app_update esp_partition wear_levelling espcoredump lwip spi_flash esp_wifi nvs_flash esp_timer esp_driver_gpio esp_driver_i2c esp_http_server fatfs vfs esp_netif mdns
 )
 
 # Same pure strictness delta already documented+suppressed for the main

@@ -1,5 +1,5 @@
 #include "mcp9600_dev.h"
-#include <Wire.h>
+#include "i2c_bus.h"
 
 #define MCP9600_REG_HOT_JUNC  0x00
 #define MCP9600_REG_STATUS    0x04
@@ -19,23 +19,16 @@
 // read just returns false and the caller (SensorTask) logs it and moves on;
 // see FLOG_EV_SENSOR_FAIL.
 bool Mcp9600Dev::readRegister8(uint8_t reg, uint8_t &val) {
-    Wire.beginTransmission(addr_);
-    Wire.write(reg);
-    Wire.endTransmission();  // see comment above — result deliberately ignored
-    if (Wire.requestFrom((int)addr_, 1) == 1) {
-        val = Wire.read();
-        return true;
-    }
-    return false;
+    i2c_bus_write(addr_, &reg, 1);  // see comment above — result deliberately ignored
+    return i2c_bus_read(addr_, &val, 1);
 }
 
 bool Mcp9600Dev::readRegister16(uint8_t reg, uint16_t &val) {
-    Wire.beginTransmission(addr_);
-    Wire.write(reg);
-    Wire.endTransmission();  // see readRegister8() — result deliberately ignored
-    if (Wire.requestFrom((int)addr_, 2) == 2) {
-        uint8_t hi = Wire.read();
-        uint8_t lo = Wire.read();
+    i2c_bus_write(addr_, &reg, 1);  // see readRegister8() — result deliberately ignored
+    uint8_t buf[2];
+    if (i2c_bus_read(addr_, buf, sizeof(buf))) {
+        uint8_t hi = buf[0];
+        uint8_t lo = buf[1];
         val = ((uint16_t)hi << 8) | lo;
         return true;
     }
@@ -43,15 +36,12 @@ bool Mcp9600Dev::readRegister16(uint8_t reg, uint16_t &val) {
 }
 
 bool Mcp9600Dev::writeRegister8(uint8_t reg, uint8_t val) {
-    Wire.beginTransmission(addr_);
-    Wire.write(reg);
-    Wire.write(val);
-    return Wire.endTransmission() == 0;
+    uint8_t buf[2] = {reg, val};
+    return i2c_bus_write(addr_, buf, sizeof(buf));
 }
 
 bool Mcp9600Dev::isConnected(void) {
-    Wire.beginTransmission(addr_);
-    return Wire.endTransmission() == 0;
+    return i2c_bus_probe(addr_);
 }
 
 bool Mcp9600Dev::checkDeviceID(void) {

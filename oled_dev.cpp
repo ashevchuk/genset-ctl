@@ -1,4 +1,5 @@
 #include "oled_dev.h"
+#include "i2c_bus.h"
 
 void OledDev::begin(const DevType *dev, uint8_t i2cAddr) {
     addr_ = i2cAddr;
@@ -21,20 +22,27 @@ void OledDev::writeDisplay(uint8_t b, uint8_t mode) {
     // library's default): group up to 16 consecutive RAM-mode bytes into
     // one I2C transaction instead of one transaction per byte — a real
     // difference for a full-screen redraw over I2C. Added on top: actually
-    // check endTransmission()'s result, which the original never did.
-    if (nBuffered_ > 16 || (nBuffered_ && mode == SSD1306_MODE_CMD)) {
-        if (Wire.endTransmission() != 0) { lastOk_ = false; return; }
-        nBuffered_ = 0;
+    // check each transaction's result, which the original never did.
+    if (nBuffered_ > kBatchMax || (nBuffered_ && mode == SSD1306_MODE_CMD)) {
+        if (!flushBatch()) return;
     }
     if (nBuffered_ == 0) {
-        Wire.beginTransmission(addr_);
-        Wire.write(mode == SSD1306_MODE_CMD ? 0x00 : 0x40);
+        len_ = 0;
+        buf_[len_++] = (mode == SSD1306_MODE_CMD) ? 0x00 : 0x40;
     }
-    Wire.write(b);
+    buf_[len_++] = b;
     if (mode == SSD1306_MODE_RAM_BUF) {
         nBuffered_++;
     } else {
-        if (Wire.endTransmission() != 0) { lastOk_ = false; return; }
-        nBuffered_ = 0;
+        flushBatch();
     }
+}
+
+bool OledDev::flushBatch(void) {
+    nBuffered_ = 0;
+    if (!i2c_bus_write(addr_, buf_, len_)) {
+        lastOk_ = false;
+        return false;
+    }
+    return true;
 }

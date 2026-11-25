@@ -1,5 +1,5 @@
 /*
- * fram_dev.h — minimal FM24V10 FRAM driver, direct Wire access.
+ * fram_dev.h — minimal FM24V10 FRAM driver, direct I2C access (i2c_bus.h).
  *
  * Replaces the FRAM_I2C library's FRAM32 class (which this project uses
  * specifically because the FM24V10 is 128 KB — a 17-bit address space,
@@ -16,7 +16,8 @@
 #ifndef FRAM_DEV_H
 #define FRAM_DEV_H
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 
 class FRAM32 {
 public:

@@ -12,7 +12,7 @@
  * stored head pointer to corrupt on power loss. A torn record write is
  * caught by its CRC16.
  *
- * Writers post to xLogQueue; I2CTask (the sole owner of Wire in this
+ * Writers post to xLogQueue; I2CTask (the sole owner of the I2C bus in this
  * firmware) drains it via fram_log_service_tick(), called once per its own
  * tick, and also owns metrics accumulation. Reads (web UI) and admin ops
  * (wipe, set-metrics) go through i2c_run_on_owner() — see fram_log_read()/
@@ -23,7 +23,8 @@
 #ifndef FRAM_LOG_H
 #define FRAM_LOG_H
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include "fram_dev.h"
 
 // ---------------------------------------------------------------------------
@@ -194,7 +195,7 @@ bool fram_log_begin(FRAM32 *dev);
 void fram_log_start_task(void);
 
 // Drains xLogQueue (writes + metrics accumulation/flush). Call once per
-// I2CTask tick — I2CTask is the sole owner of Wire in this firmware, so
+// I2CTask tick — I2CTask is the sole owner of the I2C bus in this firmware, so
 // this replaces what used to be a dedicated LogTask + xI2CMutex pair.
 void fram_log_service_tick(void);
 

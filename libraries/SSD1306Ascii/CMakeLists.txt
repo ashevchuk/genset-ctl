@@ -4,5 +4,4 @@
 idf_component_register(
     SRCS "src/SSD1306Ascii.cpp"
     INCLUDE_DIRS "src"
-    REQUIRES arduino-esp32
 )

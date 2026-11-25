@@ -22,8 +22,9 @@
 #endif
 
 #if BOOTLOADER_UPDATE_ENDPOINT_ENABLED
-// Registers POST /api/bootloader/update on webServer. Call once from
-// setup_server_routes_ws() (web.cpp) — a no-op declaration when the flag
-// above is 0, so a normal build carries no trace of this route at all.
-void setup_bootloader_update_route(void);
+#include <esp_http_server.h>
+// Handler for POST /api/bootloader/update?confirm=1, registered by
+// http_server_start(). Not declared at all when the flag above is 0, so a
+// normal build carries no trace of this route.
+esp_err_t bootloader_update_handler(httpd_req_t *req);
 #endif

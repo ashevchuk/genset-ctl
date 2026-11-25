@@ -1,24 +1,22 @@
 #pragma once
 
-#include <Arduino.h>
-#include <WiFi.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <ArduinoJson.h>
 
 // WiFi bring-up: connection-state event logging, SNTP/mDNS kickoff on first
-// IP, wifi.json load/save/apply, and the first-boot WiFiManager captive
-// portal. Extracted 2026-09-24 from esp32-gen-ctl-ai-rtos.cpp — see
+// IP, wifi.json load/save/apply, and the open-AP fallback used when there
+// is no wifi.json. Extracted 2026-09-24 from esp32-gen-ctl-ai-rtos.cpp — see
 // CLAUDE.md's "Code organization" and [[main-cpp-modularization]] project
 // memory.
 
-// Registered via WiFi.onEvent() in the main .cpp's setup() — logs every
-// WiFi/Ethernet event to Serial, no other side effects except re-asserting
-// WiFi.setSleep(false) on STA_CONNECTED (see the function body for why).
-void WiFiEvent(arduino_event_id_t event);
+// Brings up the WiFi driver (wifi_net_init()) and hooks SNTP start + mDNS
+// (once) onto the first STA IP. Call once, early in setup().
+void wifi_setup_begin(void);
 
-// WARNING: called from a separate FreeRTOS task (thread)! Registered via
-// WiFi.onEvent() for ARDUINO_EVENT_WIFI_STA_GOT_IP specifically. Starts
-// SNTP and (once, on first STA connect) mDNS.
-void WiFiGotIP(arduino_event_id_t event, arduino_event_info_t info);
+// mDNS <hostname>.local + _http._tcp:80. Called on the first STA IP, and
+// directly in AP mode.
+bool wifi_mdns_start(void);
 
 // Raw wifi.json load/save — no parsing/validation, just the FFat file I/O.
 // save() overlays `doc`'s top-level keys onto the existing file (if any)
@@ -30,17 +28,15 @@ bool wifi_config_load(JsonDocument &doc);
 bool wifi_config_save(const JsonDocument &doc);
 
 // Applies an already-loaded/parsed wifi.json document: sets wifiModeIsAP/
-// wifiHostname, brings up AP or STA (asyncWifiMulti) accordingly. Called
-// from the main .cpp's setup() (after wifi_config_load()) and from this
-// file's own run_wifi_config_portal() (after a fresh save).
+// wifiHostname, brings up AP or STA (wifi_net multi-network) accordingly. Called
+// from the main .cpp's setup() after wifi_config_load().
 bool wifi_config_apply(const JsonDocument &doc);
 
-// First-boot / no-wifi.json setup: a synchronous WiFiManager (tzapu)
-// captive portal (AP "Gen-Ctl-Setup"), builds a wifi.json document
-// from the portal's fields + WiFiManager's own scanned STA credentials,
-// saves it, and applies it. Called from the main .cpp's setup() when
-// wifi_config_load() fails.
-void run_wifi_config_portal(void);
+// No-wifi.json fallback: an open (passwordless) AP "Gen-Ctl" at
+// 192.168.4.1; the normal HTTP server's /wifi-config then writes the first
+// wifi.json. Called from the main .cpp's setup() when wifi_config_load()
+// fails.
+void wifi_start_open_ap(void);
 
 // Accessor for oled_menu.cpp's WiFi-scan-restore flow (menu_process_encoder(),
 // MENU_WIFI case 1) — kept as a function rather than exposing the backing

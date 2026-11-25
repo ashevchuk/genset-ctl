@@ -2,12 +2,12 @@
 
 // Days in Jan..Nov (Dec omitted deliberately — see date2days()); ported
 // directly from RTClib.
-static const uint8_t daysInMonth[] PROGMEM = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30};
+static const uint8_t daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30};
 
 static uint16_t date2days(uint16_t y, uint8_t m, uint8_t d) {
     if (y >= 2000U) y -= 2000U;
     uint16_t days = d;
-    for (uint8_t i = 1; i < m; ++i) days += pgm_read_byte(daysInMonth + i - 1);
+    for (uint8_t i = 1; i < m; ++i) days += daysInMonth[i - 1];
     if (m > 2 && y % 4 == 0) ++days;
     return days + 365 * y + (y + 3) / 4 - 1;
 }
@@ -50,7 +50,7 @@ DateTime::DateTime(uint32_t t) {
         days -= 365 + leap;
     }
     for (m_ = 1; m_ < 12; ++m_) {
-        uint8_t daysPerMonth = pgm_read_byte(daysInMonth + m_ - 1);
+        uint8_t daysPerMonth = daysInMonth[m_ - 1];
         if (leap && m_ == 2) ++daysPerMonth;
         if (days < daysPerMonth) break;
         days -= daysPerMonth;
@@ -76,18 +76,6 @@ DateTime::DateTime(const char *date, const char *time) {
     hh_ = conv2d(time);
     mm_ = conv2d(time + 3);
     ss_ = conv2d(time + 6);
-}
-
-DateTime::DateTime(const __FlashStringHelper *date, const __FlashStringHelper *time) {
-    char buff[11];
-    memcpy_P(buff, date, 11);
-    yOff_ = conv2d(buff + 9);
-    m_ = monthFromName(buff[0], buff[1], buff[2]);
-    d_ = conv2d(buff + 4);
-    memcpy_P(buff, time, 8);
-    hh_ = conv2d(buff);
-    mm_ = conv2d(buff + 3);
-    ss_ = conv2d(buff + 6);
 }
 
 uint8_t DateTime::dayOfTheWeek(void) const {

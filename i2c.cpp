@@ -1,5 +1,5 @@
 /*
- * i2c.cpp — I2CTask, sole owner of Wire, plus the sensor-read/RTC-service
+ * i2c.cpp — I2CTask, sole owner of the I2C bus, plus the sensor-read/RTC-service
  * work and the on-demand job-queue primitive that ride its tick.
  *
  * Extracted 2026-09-24 from esp32-gen-ctl-ai-rtos.cpp (see CLAUDE.md's "Code
@@ -27,6 +27,8 @@
 #include "esp_event.h"
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
+#include "uptime.h"
+#include <math.h>
 
 extern OledDev oled;
 extern DateTime now;
@@ -130,7 +132,7 @@ void I2CTask(void *pvParameters) {
 
     for (;;) {
         // xFlashI2CGuard: not logical I2C arbitration (this task is the sole
-        // owner of Wire) — guards the spi_flash_guard_start()/I2C collision
+        // owner of the I2C bus) — guards the spi_flash_guard_start()/I2C collision
         // hazard against WebTask's concurrent FFat reads. Best-effort, same
         // 600ms-timeout pattern as WebTask's side: proceed even if not held,
         // matching how the rest of this file already treats this guard.
@@ -176,7 +178,7 @@ void I2CTask(void *pvParameters) {
 static void i2c_read_sensors(void) {
     SensorData_t sensor_data;
     memset(&sensor_data, 0, sizeof(sensor_data));
-    sensor_data.timestamp = millis();
+    sensor_data.timestamp = uptime_ms();
 
     double voltage;
 
@@ -251,11 +253,11 @@ static void i2c_read_sensors(void) {
         static uint32_t last_bat_log_ms = 0;
         static double last_bat_logged = 0.0;
         double smoothed = adc_2_1.get();
-        uint32_t now_ms = (uint32_t)millis();
+        uint32_t now_ms = uptime_ms();
         if (now_ms - last_bat_log_ms >= 60000 ||
             fabs(smoothed - last_bat_logged) >= 0.1) {
-            SDEBUG_CHARGING("[BAT] i2c_read_sensors: INA233 raw=", String(sensor_data.bat_voltage, 3),
-                   "V smoothed=", String(smoothed, 3),
+            SDEBUG_CHARGING("[BAT] i2c_read_sensors: INA233 raw=", dbg_fixed(sensor_data.bat_voltage, 3),
+                   "V smoothed=", dbg_fixed(smoothed, 3),
                    "V charger=", IS_REG_ON(REG_CHARGER) ? "ON" : "OFF");
             last_bat_log_ms = now_ms;
             last_bat_logged = smoothed;
@@ -263,12 +265,12 @@ static void i2c_read_sensors(void) {
     } else if (ina233_present && IS_REG_IN_ON(REG_IN_BAT_SENSE)) {
         // BAT_SENSE=ON but INA233 returned 0 — unexpected, relay is closed but no voltage.
         static uint32_t last_zero_log_ms = 0;
-        uint32_t now_ms = (uint32_t)millis();
+        uint32_t now_ms = uptime_ms();
         if (now_ms - last_zero_log_ms >= 10000) {  // log every 10 s
             SDEBUG_CHARGING("[BAT] i2c_read_sensors: INA233=0 but BAT_SENSE=ON — unexpected! "
                    " BATT_FORCE=", IS_REG_ON(REG_BATT_FORCE),
                    " charger=", IS_REG_ON(REG_CHARGER) ? "ON" : "OFF",
-                   " — adc_2_1 stale=", String(adc_2_1.get(), 3), "V");
+                   " — adc_2_1 stale=", dbg_fixed(adc_2_1.get(), 3), "V");
             last_zero_log_ms = now_ms;
         }
     }
@@ -312,8 +314,8 @@ uint32_t rtc_now_unixtime(void) {
 #define RTC_RESYNC_PERIOD_MS (6UL * 3600UL * 1000UL)  // 6 hours
 static void i2c_service_rtc(void) {
     static uint32_t last_resync_ms = 0;
-    if ((uint32_t)millis() - last_resync_ms < RTC_RESYNC_PERIOD_MS) return;
-    last_resync_ms = (uint32_t)millis();
+    if (uptime_ms() - last_resync_ms < RTC_RESYNC_PERIOD_MS) return;
+    last_resync_ms = uptime_ms();
 
     DateTime fresh;
     if (!rtc.now(fresh)) return;
@@ -405,7 +407,7 @@ void setup_rtc() {
   if (!rtc.begin()) {
     oled.clear();
     oled.println("RTC ERROR");
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
   } else {
     oled.clear();
     oled.println("RTC OK");
@@ -413,7 +415,7 @@ void setup_rtc() {
 
   bool lost = false;
   if (rtc.lostPower(lost) && lost) {
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    rtc.adjust(DateTime(__DATE__, __TIME__));
     //      rtc.adjust(DateTime(2024, 8, 4, 20, 25, 20));
   }
 

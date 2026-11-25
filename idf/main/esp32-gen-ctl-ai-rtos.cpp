@@ -23,7 +23,9 @@
 // exists at that path, with line numbers that only drift further from
 // reality with each hand-edit. All diagnostics now report this file's own,
 // real line numbers.
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
+#include "uptime.h"
 /*
   To upload through terminal you can use: curl -F "image=@firmware.bin"
   esp8266-webupdate.local/update
@@ -39,8 +41,6 @@
                                    // replacing the chip with a factory-default one; re-flash,
                                    // let it apply once, then comment out again.
 
-#define I2C_BUS_CLOCK (100000L)
-#define I2C_BUS_TIMEOUT (50)
 
 // WIFI_POWER/WiFi.setTxPower() removed entirely (2026-09-24) — the radio
 // now just runs at its default TX power in every mode (AP/STA/update_mode's
@@ -50,6 +50,7 @@
 #include "esp_timer.h"
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "esp_partition.h"
 #include "rtos_config.h"
 // CURRENT_TIME/ADC2_SMOOTH/FUEL_PUMP_RISE_HYSTERESIS_L/WIFI_HOSTNAME_DEF —
@@ -57,15 +58,11 @@
 // wifiHostname's initializer, below, needs WIFI_HOSTNAME_DEF right away.
 #include "shared_defines.h"
 
-#include <ESPmDNS.h>
-#include <FFat.h>
-#include <FS.h>
-#include <Update.h>
+#include "ffat.h"
+#include "wifi_net.h"
 #include "esp_ota_ops.h"
-#include <WiFi.h>
-#include <WiFiClient.h>
-#include <WiFiUdp.h>
-#include <AsyncWiFiMulti.h>
+#include "nvs_flash.h"
+#include <math.h>
 #include <string.h>
 #include <ArduinoJson.h>
 #include "fram_dev.h" //FM24V10-GTR
@@ -82,61 +79,26 @@
 // scanner to trip), and with the whole subsystem in its own file there's no
 // longer any other reason to declare these types before their first use.
 
-// HTTP (WebServer) + WebSocket (WebSocketsServer) + WiFi captive portal
-// (WiFiManager), replacing ESPAsyncWebServer+AsyncTCP+ESPAsync_WiFiManager.
-// The old stack's connection-lifecycle allocation churn was root-caused to
-// unrecoverable heap fragmentation (heap_caps_get_largest_free_block
-// trending down across ordinary WS connect/disconnect cycles, never
-// recovering).
-//
-// WEBSOCKETS_TCP_TIMEOUT: the library defaults this to 5000ms per client
-// socket (set via client->tcp->setTimeout() when it accepts a connection —
-// WebSocketsServer.cpp). ReportTask's wsServer.broadcastTXT() call
-// (~1x/sec) iterates every connected client SEQUENTIALLY and synchronously —
-// if a client's TCP write stalls (dropped WiFi association, a phone that
-// went out of range mid-connection, ...), that one client can block the
-// whole broadcast for up to this many ms before WebSocketsServer gives up
-// on it and moves to the next. With 3+ simultaneously-stalled clients that
-// alone can exceed the 15s Task Watchdog window ReportTask registers for —
-// same failure shape as the MQTT socket-timeout/TWDT race already fixed in
-// MqttTask (see project memory: wdt-mqtt-race), just on the WS side instead
-// of MQTT. A FLOG_EV_TASK_WDT record naming "Report" as the starved task
-// was found live 2026-08-25 (uptime_s 2238) — its exact cause couldn't be
-// confirmed (the .elf that produced that build didn't survive to run
-// addr2line against; see build_archive/ and compile.sh, added the same day
-// specifically so this gap doesn't recur), but this is the only unbounded
-// blocking call in ReportTask's loop body, so it's the leading suspect.
-// The actual 1500ms override lives in libraries/WebSockets/CMakeLists.txt
-// now (target_compile_definitions on that component), not here — a
-// `#define` in this file only ever affected this translation unit's own
-// preprocessor state, never the library's separately-compiled src/*.cpp
-// files that actually read the macro. Found live 2026-09-24: this "fix"
-// had been a silent no-op since the day it was added, every build since
-// 2026-08-25 ran on the library's real 5000ms default regardless.
-#include <WebServer.h>
-#include <WebSockets4WebServer.h>
-#include <WiFiManager.h>
 
-// Use FFat filesystem through FS interface
-FS *filesystem = &FFat;
 
 // WiFi config: stored in /wifi.json on FFat. WIFI_JSON_PATH/_SIZE/
-// WIFI_NETWORKS_MAX moved to config.h (2026-09-24) — non-static: web.cpp's
-// setup_server_routes_ws()/parse_wifi_core_fields() also need them.
-// WIFI_PORTAL_SSID/WIFI_PORTAL_PASS moved to wifi_setup.cpp (2026-09-24) —
-// only run_wifi_config_portal() used them. WIFI_HOSTNAME_DEF (needed right
+// WIFI_NETWORKS_MAX moved to config.h (2026-09-24) — non-static: the HTTP
+// server's /api/wifi/config and /api/wifi/save (http_server.cpp) also need them.
+// WIFI_HOSTNAME_DEF (needed right
 // below, for wifiHostname's own initializer) now comes from
 // shared_defines.h (2026-09-25) instead of a local duplicate.
 
-GuLinux::AsyncWiFiMulti asyncWifiMulti;
-String wifiHostname = WIFI_HOSTNAME_DEF;
+char wifiHostname[33] = WIFI_HOSTNAME_DEF;
 bool wifiModeIsAP = false;  // true = AP, false = STA
+// Set when wifi.json exists but cannot be applied: the radio stays off and the
+// controller keeps running; WiFi is fixed from the OLED menu.
+static bool wifiRadioOff = false;
 
 // s_wifi_ssid/s_wifi_pass/wifi_get_last_sta_creds() moved to wifi_setup.cpp
 // (2026-09-24), alongside wifi_config_apply() — the only writer of those
 // two buffers.
 
-// MqttConfig_t/g_mqtt_config/the PubSubClient instance moved to mqtt.cpp
+// MqttConfig_t/g_mqtt_config/the MQTT client moved to mqtt.cpp
 // (2026-09-24) — see mqtt.h.
 TaskHandle_t xMqttTask = NULL;
 TaskHandle_t xWebTask = NULL;
@@ -176,9 +138,6 @@ const char *MAINT_TYPE_LABELS[FLOG_MAINT_TYPES] = {
     "Fuel filter", "Valve clearance", "Other"
 };
 
-// safety_start_inhibited() prototype now comes from statemachine.h
-// (2026-09-24, pass 1 of the StateMachineTask cut) — still called from
-// start_working()/start_retry_working() below.
 
 // TimingConfig_t/BatteryConfig_t/EngineConfig_t/TimeConfig_t and their
 // g_*_config instances moved to config.cpp/config.h (2026-09-24) — see
@@ -192,7 +151,7 @@ const char *MAINT_TYPE_LABELS[FLOG_MAINT_TYPES] = {
 #include "ads1115_dev.h"
 #include "ina233_dev.h"
 #include "smoothed_safe.h"
-#include <Wire.h>
+#include "i2c_bus.h"
 
 #include "SSD1306Ascii.h" // font/glyph/cursor engine only, kept from the library — see oled_dev.h
 #include "oled_dev.h"
@@ -239,6 +198,7 @@ Mcp9600Dev tempSensor;
 #include <sys/time.h>
 #include <time.h>
 #include "esp_wifi.h"
+#include "driver/gpio.h"
 
 // CONFIG_SNTP_TIME_SERVER/ntpServer1/ntpServer2/esp_netif_sntp.h/esp_sntp.h
 // moved to i2c.cpp (2026-09-24) alongside setup_ntp() — time_t itself
@@ -263,18 +223,6 @@ SemaphoreHandle_t xFlashI2CGuard = NULL;
 SemaphoreHandle_t xSerial2Mutex = NULL;
 SemaphoreHandle_t xShiftRegMutex = NULL;
 SemaphoreHandle_t xStateMutex = NULL;
-// Guards WebSocketsServer's internal client list. The library has no lock
-// of its own, and three call sites touch that list from two tasks:
-//   - wsServer.loop() (WebTask)
-//   - the /ws accept hook inside webServer.handleClient() (WebTask)
-//   - broadcastTXT()/connectedClients() (ReportTask)
-// Accept has to take it too: newClient() publishes client->tcp before it
-// sets WSC_HEADER, and a concurrent clientIsConnected() treats that window
-// as a dead slot and clientDisconnect()s the socket just handed out.
-// Observed live without the lock: LoadProhibited in handleClientData()
-// reading a client->tcp the other task had just nulled.
-SemaphoreHandle_t xWsMutex = NULL;
-
 // Queues for inter-task communication
 QueueHandle_t xPowerDataQueue = NULL;
 QueueHandle_t xOutputCommandQueue = NULL;
@@ -299,14 +247,9 @@ TaskHandle_t xEspNowTask = NULL;
 // `extern portMUX_TYPE g_state_spinlock;` for why.
 portMUX_TYPE g_state_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
-// Flag to indicate RTOS tasks are running
-volatile bool g_rtos_running = false;  // non-static: web.cpp also reads this
 
 // ============================================================================
 
-#define MAX_SRV_CLIENTS 5
-WiFiServer sserver(23);
-WiFiClient serverClients[MAX_SRV_CLIENTS];
 
 /*
 ADC0_0 - oil temperature
@@ -466,35 +409,6 @@ DateTime start;
 // wifi_fb_host/wifi_fb_ssid/wifi_fb_password moved to update_mode.cpp
 // (2026-09-24) — only that file's fallback-AP connect logic used them.
 
-// HTTP (WebServer) + WebSocket (WebSockets4WebServer) transport, replacing
-// ESPAsyncWebServer+AsyncTCP — see CLAUDE.md's "Web/MQTT interfaces"
-// section for the full migration rationale (heap fragmentation under
-// AsyncTCP's per-connection allocation churn). Both share port 80 now
-// (WS at /ws) — arduino-esp32's own WebServer never had the hook mechanism
-// WebSockets4WebServer needs to do this (unlike ESP8266/RP2040), so
-// libraries/WebServer/ vendors a patched copy that adds it; see that
-// library's own CMakeLists.txt/WebServer.h comments and
-// idf/patch_arduino_esp32.sh (disables arduino-esp32's own built-in
-// WebServer so the two don't collide at link time).
-//
-// run_wifi_config_portal() creates its own short-lived internal WebServer
-// (owned by its WiFiManager instance) on port 80, torn down by
-// shutdownConfigPortal() before startConfigPortal() returns — no port
-// conflict with this webServer.begin(), called later in setup().
-WebServer webServer(80);
-WebSockets4WebServer wsServer;
-
-// Global variables for file upload
-File uploadFile;
-String uploadPath;
-
-// Separate state for the WebServer (sync) equivalents of /api/upload and
-// /update (Phase 3c) — kept distinct from the Async* globals above so the
-// two stacks can be exercised side-by-side during migration testing without
-// one clobbering the other's in-flight upload.
-File uploadFileWs;
-String uploadPathWs;
-
 
 // shift_reg/shift_reg_in and every REG_*/IS_REG_* macro moved to
 // shiftreg.h (2026-09-24) — included below, near the other local module
@@ -561,9 +475,8 @@ float tachoFREQ_last = 0.0f;
 // state/SharedState_t themselves live in rtos_config.h. runtimeState/
 // prevState and the PREV_STATE/CURRENT_STATE/STATE(...)/etc. macros moved to
 // statemachine.h/.cpp (2026-09-24, pass 2 of the StateMachineTask cut) —
-// still non-static/extern-declared there, since is_not_working()/
-// start_working()/start_retry_working()/stop_working() below still read/
-// drive the state machine through them.
+// still non-static/extern-declared there, since is_not_working() below
+// still reads the state machine through them.
 
 // Global shared state instance — non-static: see rtos_config.h's own
 // `extern SharedState_t g_state;` for why.
@@ -693,14 +606,9 @@ float tachoFREQ(void);
 bool is_running(void);
 bool is_stopped(void);
 bool is_not_working(void);
-void start_working();
-void start_retry_working();
-void stop_working();
 void rotary_loop();
-// onWsServerEvent()/setup_server_routes_ws()/serve_static_ws()/
-// parse_wifi_core_fields() prototypes now come from web.h (2026-09-24).
 // WiFiEvent()/WiFiGotIP()/wifi_config_load()/wifi_config_save()/
-// wifi_config_apply()/run_wifi_config_portal()/wifi_get_last_sta_creds()
+// wifi_config_apply()/wifi_start_open_ap()/wifi_get_last_sta_creds()
 // prototypes now come from wifi_setup.h (2026-09-24).
 // sync_time_cb()/setup_ntp()/setup_rtc() prototypes now come from i2c.h
 // (2026-09-24). apply_timezone() prototype comes from config.h.
@@ -738,7 +646,6 @@ void serial_debug(const char *data);
 // state_name() prototype now comes from rtos_config.h (non-static — see there).
 void WebTask(void *pvParameters);
 void setup_rtos();
-void loop_serial(void);
 void loop(void);
 double calcBatVoltageCurve(BatVoltageCurvePoints_t curve,
                            const uint8_t curveLength, const double adc_value) {
@@ -960,23 +867,6 @@ bool is_not_working(void) {
   return false;
 }
 
-void start_working() {
-  if (is_not_working() && !safety_start_inhibited()) {
-    STATE(STATE_STARTING_SINGLE);
-  }
-}
-
-void start_retry_working() {
-  if (is_not_working() && !safety_start_inhibited()) {
-    STATE(STATE_STARTING_RETRY);
-  }
-}
-
-// Always the full stop sequence, including from IDLE — same reason as
-// WEB_CMD_STOP in StateMachineTask: a hand-started engine the controller
-// never saw as running still has to be killable.
-void stop_working() { STATE(STATE_STOPPING_LOAD_OFF); }
-
 void rotary_loop() {
   // Encoder events are now consumed by menu_process_encoder() in DisplayTask.
 }
@@ -985,11 +875,10 @@ void rotary_loop() {
 
 // Encoder ISRs are now internal to encoder.cpp (hardware PCNT + minimal button ISR)
 
-// onWsServerEvent() moved to web.cpp (2026-09-24).
 
 // WARNING: This function is called from a separate FreeRTOS task (thread)!
 // WiFiEvent()/WiFiGotIP()/wifi_config_load()/wifi_config_save()/
-// wifi_config_apply()/run_wifi_config_portal() moved to wifi_setup.cpp
+// wifi_config_apply()/wifi_start_open_ap() live in wifi_setup.cpp
 // (2026-09-24).
 // sync_time_cb()/setup_ntp()/setup_rtc() moved to i2c.cpp (2026-09-24).
 // printLocalTime() moved there too, then deleted outright — confirmed
@@ -1003,14 +892,10 @@ void rotary_loop() {
 // mcp39f511a_print_energy_counters_serial() moved to powermeter.cpp
 // (2026-09-24).
 
-// static_request_rate_exceeded()/mime_type_for_path()/serve_static_ws()
-// moved to web.cpp (2026-09-24).
 
-// Overrides the weak `esp_app_desc` symbol that arduino-esp32's precompiled
-// libesp_app_format.a otherwise provides (a fixed vendor placeholder
-// describing the esp32-libs release itself, not this sketch — arduino-builder
-// never regenerates a per-project app descriptor the way esp-idf's cmake
-// build does). __DATE__/__TIME__ are evaluated when THIS .cpp is compiled.
+// Overrides esp_app_format's weak `esp_app_desc` to put a build-time
+// yyyymmddhhmm stamp in version[] instead of the git describe string.
+// __DATE__/__TIME__ are evaluated when THIS .cpp is compiled.
 // ninja skips this TU on incremental rebuilds of other files, so every
 // intentional `idf.py build` path (compile*.sh / flash*.sh) runs
 // idf/bump_fw_version.sh first — touches this file so version[] always
@@ -1045,7 +930,7 @@ static const esp_app_desc_t k_fw_app_desc = {
     "esp32-gen-ctl-ai-rtos",        // project_name[32]
     __TIME__,                       // time[16]
     __DATE__,                       // date[16]
-    "arduino-esp32",                // idf_ver[32]
+    IDF_VER,                        // idf_ver[32]
     {0},                             // app_elf_sha256[32]
     0, 0,                            // min/max_efuse_blk_rev_full
     0,                               // mmu_page_size
@@ -1056,17 +941,20 @@ static const esp_app_desc_t k_fw_app_desc = {
 extern "C" const esp_app_desc_t esp_app_desc
     __attribute__((section(".rodata_desc"))) __attribute__((used)) = k_fw_app_desc;
 
-// webServerNotFound()/fw_ota_state_name()/fw_append_partition_json()/
-// fw_build_partitions_json()/setup_server_routes_ws() moved to web.cpp
-// (2026-09-24).
 
 // update_mode() moved to update_mode.cpp (2026-09-24).
 
 // Pin/serial/shift-register bring-up, initial relay/LED/buzzer state, WiFi
-// event-handler registration, Wire/OLED bring-up — everything before the
+// event-handler registration, I2C bus/OLED bring-up — everything before the
 // REG_IN_JP1 update-mode check.
 static void setup_early_hw(void) {
-  pinMode(PIN_BTN_MODE, INPUT);
+  gpio_config_t btn_mode_cfg = {};
+  btn_mode_cfg.pin_bit_mask = 1ULL << PIN_BTN_MODE;
+  btn_mode_cfg.mode = GPIO_MODE_INPUT;
+  btn_mode_cfg.pull_up_en = GPIO_PULLUP_DISABLE;
+  btn_mode_cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  btn_mode_cfg.intr_type = GPIO_INTR_DISABLE;
+  gpio_config(&btn_mode_cfg);
 
   // PIN_ENC_A/B/BTN are configured by encoder_setup() via PCNT driver
 
@@ -1075,34 +963,26 @@ static void setup_early_hw(void) {
 
   read_regs();
 
-  Serial.begin(115200);
   SLOG_PRINTLN();
   SLOG_PRINTLN("Booting Sketch...");
 
   REG_ON(REG_LED0);
 
   REG_ON(REG_BUZZER);
-  delay(10);
+  vTaskDelay(pdMS_TO_TICKS(10));
   REG_OFF(REG_BUZZER);
 
   REG_ON(REG_LOAD_RELAY);
 
-  // delete old config
-  WiFi.disconnect(true);
+  wifi_setup_begin();
 
-  delay(1000);
+  vTaskDelay(pdMS_TO_TICKS(1000));
 
-  WiFi.onEvent(WiFiEvent);
-  WiFi.onEvent(WiFiGotIP, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
-
-  Wire.begin();
+  i2c_bus_begin();
 
   oled.begin(&Adafruit128x32, OLED_I2C_ADDRESS);
   oled.setFont(Adafruit5x7);
   oled.clear();
-
-  Wire.setClock(I2C_BUS_CLOCK);
-  Wire.setTimeOut(I2C_BUS_TIMEOUT); // 50ms I2C transaction timeout to prevent ISR spin on NACK → Interrupt WDT
 }
 
 // Mounts FFat (auto-formats on first-ever boot if mount fails), logs
@@ -1113,47 +993,50 @@ static void setup_ffat(void) {
   oled.println("init FFat...");
   SLOG_PRINTLN("Initializing FFat filesystem...");
 
-  // FFat.begin(true) will automatically format the filesystem if it fails to
-  // mount
-  if (!FFat.begin(true)) {
+  // Formats the filesystem if it fails to mount (first boot).
+  if (!ffat_mount()) {
     SLOG_PRINTLN("FFat Mount Failed!");
     SLOG_PRINTF("Error: FFat partition may not exist or is corrupted\n");
     SLOG_PRINTLN("Note: Make sure partition table includes 'fat' partition");
     SLOG_PRINTLN("Partition scheme should be: app3M_fat9M_16MB");
     oled.println("FFat FAIL");
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
   } else {
     SLOG_PRINTLN("FFat Mount Success");
-    size_t totalBytes = FFat.totalBytes();
-    size_t usedBytes = FFat.usedBytes();
-    size_t freeBytes = FFat.totalBytes() - FFat.usedBytes();
-    SLOG_PRINTF("FFat Total: %u bytes (%.2f MB)\n", totalBytes,
+    uint64_t totalBytes = 0, freeBytes = 0;
+    ffat_info(&totalBytes, &freeBytes);
+    uint64_t usedBytes = totalBytes - freeBytes;
+    SLOG_PRINTF("FFat Total: %llu bytes (%.2f MB)\n", (unsigned long long)totalBytes,
                   totalBytes / (1024.0 * 1024.0));
-    SLOG_PRINTF("FFat Used: %u bytes (%.2f MB)\n", usedBytes,
+    SLOG_PRINTF("FFat Used: %llu bytes (%.2f MB)\n", (unsigned long long)usedBytes,
                   usedBytes / (1024.0 * 1024.0));
-    SLOG_PRINTF("FFat Free: %u bytes (%.2f MB)\n", freeBytes,
+    SLOG_PRINTF("FFat Free: %llu bytes (%.2f MB)\n", (unsigned long long)freeBytes,
                   freeBytes / (1024.0 * 1024.0));
     oled.println("FFat OK");
   }
 }
 
-// Loads wifi.json (or runs the first-boot config portal if it doesn't
-// exist yet), applies it, then loads every other *_config_load() group
+// Loads wifi.json (or starts the open fallback AP if it doesn't exist
+// yet), applies it, then loads every other *_config_load() group
 // riding the same document (MQTT/limits/timing/battery/engine/time).
 static void setup_wifi_config(void) {
   JsonDocument wifiDoc;
   bool wifiLoaded = wifi_config_load(wifiDoc);
   if (!wifiLoaded) {
     oled.clear();
-    oled.println("WiFi config...");
-    SLOG_PRINTLN("No wifi.json -> config portal");
-    run_wifi_config_portal();
+    oled.println("Open AP Gen-Ctl");
+    SLOG_PRINTLN("No wifi.json -> open AP");
+    wifi_start_open_ap();
   } else {
     if (!wifi_config_apply(wifiDoc)) {
-      SLOG_PRINTLN("wifi_config_apply failed");
-      oled.println("WiFi apply fail");
-      delay(500);
-      ESP.restart();
+      // Rebooting here looped forever on a bad wifi.json (e.g. no STA
+      // network) and kept the generator logic from ever running. Run without
+      // WiFi instead; the OLED menu can rewrite the config. No open AP here:
+      // a bad config on a deployed unit must not hand out an open network.
+      SLOG_PRINTLN("wifi_config_apply failed -> radio off, fix WiFi from the OLED menu");
+      oled.println("WiFi cfg bad: off");
+      wifi_net_radio_off();
+      wifiRadioOff = true;
     }
     mqtt_config_load(wifiDoc);
     SLOG_PRINTF("MQTT: %s host=%s:%u prefix=%s\n",
@@ -1204,7 +1087,7 @@ static void setup_powermeter_hw(void) {
   if (!IC1.begin()) {
     oled.clear();
     oled.println("INA233 fail");
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
   }
 
   adc_1_0.begin(ADC1_SMOOTH_METHOD, ADC1_SMOOTH);
@@ -1229,7 +1112,7 @@ static void setup_powermeter_hw(void) {
 static void setup_mcp39f511a_debug_dump(void) {
   #ifndef POWERMON
   // Initialize and read MCP39F511A configuration
-  delay(100); // Small delay for UART2/MCP to settle after bring-up
+  vTaskDelay(pdMS_TO_TICKS(100)); // Small delay for UART2/MCP to settle after bring-up
   if (mcp39f511a_load_config_from_flash()) {
     mcp39f511a_print_config();
     mcp39f511a_print_config_serial();
@@ -1449,8 +1332,7 @@ static void setup_i2c_scan(void) {
     SLOG_PRINTLN("I2C scan:");
     uint8_t found = 0;
     for (uint8_t addr = 1; addr < 127; addr++) {
-      Wire.beginTransmission(addr);
-      if (Wire.endTransmission() == 0) {
+      if (i2c_bus_probe(addr)) {
         SLOG_PRINTF("  ACK  0x%02X\n", addr);
         found++;
         if (addr == 0x45) ina233_present = true;
@@ -1474,7 +1356,7 @@ static void setup_mcp9600(void) {
   } else {
     oled.clear();
     oled.println("KSEN NAK");
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
 
@@ -1484,7 +1366,7 @@ static void setup_adc1(void) {
     SLOG_PRINT("ADS1115 No 1 not connected!");
     oled.clear();
     oled.println("ADC0 fail");
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
   } else {
     // Rate/range/mode are fixed inside Ads1115Dev::init() — this is the
     // only configuration this project uses.
@@ -1503,7 +1385,7 @@ static void setup_adc2(void) {
     SLOG_PRINT("ADS1115 No 2 not connected!");
     oled.clear();
     oled.println("ADC1 fail");
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
   } else {
     // Rate/range/mode are fixed inside Ads1115Dev::init() — this is the
     // only configuration this project uses.
@@ -1526,7 +1408,7 @@ static void setup_fram(void) {
   if (rv != 0) {
     oled.clear();
     oled.println("NO FRAM");
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
   } else {
     oled.clear();
     oled.println("FRAM at: 0x56");
@@ -1569,10 +1451,10 @@ static void setup_battery_voltage(void) {
       while ((CURRENT_TIME - waitTime <= 1000) &&
       (IS_REG_IN_OFF(REG_IN_BAT_SENSE))) {
         read_regs();
-        delay(1);
+        vTaskDelay(pdMS_TO_TICKS(1));
       };
 
-      delay(200);
+      vTaskDelay(pdMS_TO_TICKS(200));
 
       if (IS_REG_IN_ON(REG_IN_BAT_SENSE)) {
         IC1.getBusVoltage_V(voltage_IC1);
@@ -1587,7 +1469,7 @@ static void setup_battery_voltage(void) {
       while ((CURRENT_TIME - waitTime <= 1000) &&
       (IS_REG_IN_ON(REG_IN_BAT_SENSE))) {
         read_regs();
-        delay(1);
+        vTaskDelay(pdMS_TO_TICKS(1));
       };
 
       REG_OFF(REG_BATT_OFF);
@@ -1602,41 +1484,37 @@ static void setup_battery_voltage(void) {
 }
 
 // Starts the WiFi radio in whichever mode wifi_config_apply() selected —
-// AP (mDNS only, already listening) or STA (asyncWifiMulti's own
-// non-blocking scan-and-connect).
+// AP (mDNS only, already listening) or STA (wifi_net's non-blocking
+// scan-and-connect).
 static void setup_start_wifi(void) {
   oled.clear();
+  if (wifiRadioOff) {
+    oled.println("WiFi off (bad cfg)");
+    return;
+  }
   if (wifiModeIsAP) {
     oled.println("AP mode");
-    MDNS.begin(wifiHostname.c_str());
-    MDNS.addService("http", "tcp", 80);
+    wifi_mdns_start();
   } else {
     oled.println("WiFi connecting...");
-    // asyncWifiMulti.start() is fully non-blocking: disconnect → mode(STA) → async scan
-    // On scan done it picks the best AP and calls WiFi.begin() automatically
+    // wifi_net_multi_start() is fully non-blocking: disconnect → mode(STA) → async scan;
+    // on scan done it connects to the strongest configured AP
     // The core's auto-reconnect retries back to back on NO_AP_FOUND, each
     // attempt sweeping every channel — with ESP-NOW enabled that keeps the
     // radio off the shared channel for the whole AP outage. loop()'s
-    // AsyncWiFiMulti restart + espnow_wifi_supervise() reconnect instead.
-    if (g_espnow_config.enabled) WiFi.setAutoReconnect(false);
-    asyncWifiMulti.start();
+    // wifi_net_multi_start() retry + espnow_wifi_supervise() reconnect instead.
+    if (g_espnow_config.enabled) wifi_net_set_auto_reconnect(false);
+    wifi_net_multi_start();
   }
 }
 
-// Telnet (SDEBUG clients only — no MCP UART passthrough), WebSocket, and
-// HTTP server bring-up — WebTask itself isn't created until setup_rtos()
-// right after this.
+// Telnet (SDEBUG output, DEBUG builds only) and LAN discovery bring-up. The
+// HTTP/WebSocket server is started later, by WebTask.
 static void setup_web_servers(void) {
-  sserver.begin();
-  sserver.setNoDelay(true);
+#if defined(DEBUG)
+  debug_telnet_begin();
+#endif
 
-  // wsServer's own onEvent()/begin() already ran inside its constructor
-  // (WebSockets4WebServer) — setup_server_routes_ws() (web.cpp) is what
-  // actually registers it onto webServer via addHook(), alongside every
-  // other route. Not polled (wsServer.loop()) until WebTask exists (created
-  // in setup_rtos(), right after this).
-  setup_server_routes_ws();
-  webServer.begin();
   gen_discovery_begin();
 }
 
@@ -1650,7 +1528,7 @@ void setup(void) {
 
   // Same DEBUG_SERIAL_ENABLED flag also kills ESP-IDF/Arduino-core's own
   // ESP_LOG* output (see debug.h) — called first, before setup_early_hw()
-  // even touches WiFi.disconnect(true), so the WiFi driver's own init
+  // even brings the WiFi driver up (wifi_setup_begin()), so its own init
   // chatter is caught too. Does not silence the bootloader banner/earliest
   // cpu_start lines — those print before this function is ever reached.
   SLOG_SILENCE_IDF_LOGS();
@@ -1665,7 +1543,7 @@ void setup(void) {
 
   setup_ffat();
 
-  // Setup NTP BEFORE WiFi.begin() to enable DHCP NTP option
+  // Setup NTP before the first STA connect to enable the DHCP NTP option
   setup_ntp();
 
   setup_wifi_config();
@@ -1695,18 +1573,22 @@ void setup(void) {
   oled.println("ready");
 
   if (wifiModeIsAP)
-    SLOG_PRINTF("AP ready. Connect to WiFi then http://%s.local or %s\n",
-                  wifiHostname.c_str(), WiFi.softAPIP().toString().c_str());
+  {
+    uint32_t ap_ip = wifi_net_ap_ip();
+    const uint8_t *a = (const uint8_t *)&ap_ip;
+    SLOG_PRINTF("AP ready. Connect to WiFi then http://%s.local or %u.%u.%u.%u\n",
+                  wifiHostname, a[0], a[1], a[2], a[3]);
+  }
   else
     SLOG_PRINTF("Ready! Open http://%s.local in your browser\n",
-                  wifiHostname.c_str());
+                  wifiHostname);
 
   REG_ON(REG_BUZZER);
-  delay(10);
+  vTaskDelay(pdMS_TO_TICKS(10));
   REG_OFF(REG_BUZZER);
-  delay(5);
+  vTaskDelay(pdMS_TO_TICKS(5));
   REG_ON(REG_BUZZER);
-  delay(10);
+  vTaskDelay(pdMS_TO_TICKS(10));
   REG_OFF(REG_BUZZER);
 
   REG_OFF(REG_LED0);
@@ -1774,11 +1656,9 @@ void setup_rtos() {
     // calls them while already holding the mutex.
     xShiftRegMutex = xSemaphoreCreateRecursiveMutex();
     xStateMutex = xSemaphoreCreateMutex();
-    xWsMutex = xSemaphoreCreateMutex();
 
     if (xFlashI2CGuard == NULL || xSerial2Mutex == NULL ||
-        xShiftRegMutex == NULL || xStateMutex == NULL ||
-        xWsMutex == NULL) {
+        xShiftRegMutex == NULL || xStateMutex == NULL) {
         SLOG_PRINTLN("ERROR: Failed to create mutexes!");
         return;
     }
@@ -1801,13 +1681,6 @@ void setup_rtos() {
     }
     SLOG_PRINTLN("Queues created");
 
-    // HTTP/WS handlers enqueue onto xWebCommandQueue once this is true.
-    // Must flip BEFORE WebTask is created: WebTask begins polling
-    // handleClient() the instant xTaskCreate returns, and the pre-RTOS
-    // fallback in /reg used to call reg_set() with no REG_START check.
-    // Found 2026-09-28. Defense in depth: that fallback also refuses
-    // REG_START now (web.cpp).
-    g_rtos_running = true;
 
     // Create event group
     xStateEvents = xEventGroupCreate();
@@ -1820,7 +1693,7 @@ void setup_rtos() {
     // Initialize shared state
     g_state.current_state = STATE_INIT;
     g_state.previous_state = STATE_INIT;
-    g_state.state_entry_time = millis();
+    g_state.state_entry_time = uptime_ms();
     g_state.shift_reg_inputs = shift_reg_in;
     g_state.shift_reg_outputs = shift_reg;
 
@@ -1850,7 +1723,7 @@ void setup_rtos() {
     if (result != pdPASS) SLOG_PRINTLN("ERROR: ShiftRegTask creation failed!");
 
     // SensorTask retired — its body is now i2c_read_sensors(), called from
-    // I2CTask (created below), the sole remaining owner of Wire.
+    // I2CTask (created below), the sole remaining owner of the I2C bus.
 
     result = xTaskCreatePinnedToCore(
         PowerMeterTask,
@@ -1962,31 +1835,6 @@ void setup_rtos() {
 
 //================================================================
 
-// Accept telnet clients for SDEBUG() output only. Former Serial2↔telnet
-// MCP passthrough removed 2026-09-29 (UART2 owned exclusively by the
-// ESP-IDF MCP driver / PowerMeterTask).
-void loop_serial(void) {
-  uint8_t i;
-  if (sserver.hasClient()) {
-    for (i = 0; i < MAX_SRV_CLIENTS; i++) {
-      if (!serverClients[i] || !serverClients[i].connected()) {
-        if (serverClients[i])
-          serverClients[i].stop();
-        serverClients[i] = sserver.accept();
-        break;
-      }
-    }
-    if (i >= MAX_SRV_CLIENTS) {
-      sserver.accept().stop();
-    }
-  }
-  for (i = 0; i < MAX_SRV_CLIENTS; i++) {
-    if (serverClients[i] && !serverClients[i].connected()) {
-      serverClients[i].stop();
-    }
-  }
-}
-
 void loop(void) {
   // ============================================================================
   // Simplified loop - most work is now handled by FreeRTOS tasks
@@ -1995,45 +1843,46 @@ void loop(void) {
   // Feed watchdog
   esp_task_wdt_reset();
 
-  // STA mode: asyncWifiMulti handles connection; restart it when Idle (disconnected/failed).
-  // AsyncWiFiMulti has no auto-retry of its own (confirmed by reading its
-  // source — onFailure()/a post-connect drop both just leave it at Idle
-  // forever), so this is the only thing that ever calls start() again after
-  // a failure. Retrying on a fixed 10s cadence hammers WiFi.disconnect() +
-  // WiFi.mode() + scanNetworks() indefinitely against a flapping/unreachable
+  // STA mode: wifi_net's multi-network connect handles connection; restart it
+  // when Idle (disconnected/failed). It has no auto-retry of its own (a failed
+  // round or a post-connect drop just leaves it Idle), so this is the only
+  // thing that ever starts it again after a failure. Retrying on a fixed 10s
+  // cadence hammers disconnect + mode switch + full scan indefinitely against
+  // a flapping/unreachable
   // AP without giving the driver time to settle between attempts — back off
   // exponentially (10s, 20s, 40s, 80s, 160s, capped at 5 min) instead, and
-  // reset to 10s the moment a connection attempt makes any progress.
-  if (!wifiModeIsAP) {
+  // reset to 10s once connected. Resetting whenever the multi connect was
+  // merely Running reset it during every scan, so it never grew past 10s.
+  if (!wifiModeIsAP && !wifiRadioOff) {
     static unsigned long lastWifiCheck = 0;
     static uint8_t wifiRetryBackoff = 0;
-    bool multiIdle = asyncWifiMulti.status() == GuLinux::AsyncWiFiMulti::Idle;
-    bool apBack = espnow_wifi_supervise(WiFi.status() == WL_CONNECTED, multiIdle);
+    bool multiIdle = wifi_net_multi_status() == WIFI_MULTI_IDLE;
+    bool apBack = espnow_wifi_supervise(wifi_net_connected(), multiIdle);
     if (multiIdle && apBack) {
       SLOG_PRINTLN("WiFi: AP seen on home channel — reconnecting on that channel");
       lastWifiCheck = CURRENT_TIME;
       wifiRetryBackoff = 0;
       // Single-channel scan: a full one would take the radio off the
       // ESP-NOW channel for seconds right as the link is recovering.
-      asyncWifiMulti.start(espnow_home_channel());
+      wifi_net_multi_start(espnow_home_channel());
     } else if (multiIdle && !espnow_wifi_probe_running()) {
       unsigned long backoffMs = 10000UL << (wifiRetryBackoff < 5 ? wifiRetryBackoff : 5);
       if (backoffMs > 300000UL) backoffMs = 300000UL;
       if (CURRENT_TIME - lastWifiCheck >= backoffMs) {
         lastWifiCheck = CURRENT_TIME;
         if (wifiRetryBackoff < 5) wifiRetryBackoff++;
-        SLOG_PRINTF("WiFi: AsyncWiFiMulti idle — restarting scan (next backoff %lus)\n",
+        SLOG_PRINTF("WiFi: multi-network connect idle — restarting scan (next backoff %lus)\n",
                       backoffMs / 1000);
-        asyncWifiMulti.start();
+        wifi_net_multi_start();
       }
-    } else if (!multiIdle) {
+    } else if (wifi_net_connected()) {
       lastWifiCheck = CURRENT_TIME;  // reset so retry starts fresh after next disconnect
       wifiRetryBackoff = 0;
     }
   }
 
 #if defined(DEBUG)
-  loop_serial();
+  debug_telnet_poll();
 #endif
 
   // Handle rotary encoder (interrupt-based but needs polling)
@@ -2072,3 +1921,30 @@ void loop(void) {
   vTaskDelay(pdMS_TO_TICKS(10));
 }
 
+// Same parameters as the loopTask arduino-esp32 used to create: priority 1,
+// core 1, 8 KB stack, setup() once and loop() forever.
+#define LOOP_TASK_STACK_SIZE 8192
+#define LOOP_TASK_PRIORITY   1
+#define LOOP_TASK_CORE       1
+
+static void loop_task(void *) {
+  setup();
+  for (;;) loop();
+}
+
+// NVS holds WiFi driver state and ESP-NOW's remembered home channel. A
+// partition that is full or from a newer NVS format is erased and
+// re-initialized, as initArduino() did.
+static void nvs_init_or_erase(void) {
+  esp_err_t err = nvs_flash_init();
+  if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    if (nvs_flash_erase() == ESP_OK) err = nvs_flash_init();
+  }
+  if (err != ESP_OK) SLOG_PRINTF("NVS init failed: %s\n", esp_err_to_name(err));
+}
+
+extern "C" void app_main(void) {
+  nvs_init_or_erase();
+  xTaskCreatePinnedToCore(loop_task, "loopTask", LOOP_TASK_STACK_SIZE, NULL, LOOP_TASK_PRIORITY, NULL,
+                          LOOP_TASK_CORE);
+}

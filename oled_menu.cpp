@@ -23,10 +23,11 @@
  * crosses over.
  */
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
+#include "uptime.h"
 #include <ArduinoJson.h>
-#include <WiFi.h>
-#include <AsyncWiFiMulti.h>
+#include "wifi_net.h"
 #include <esp_task_wdt.h>
 
 #include "oled_menu.h"
@@ -54,7 +55,6 @@ extern SmoothedSafe<double> adc_2_0;
 extern SmoothedSafe<double> adc_2_1;
 
 extern bool wifiModeIsAP;
-extern GuLinux::AsyncWiFiMulti asyncWifiMulti;
 
 // wifi_config_load()/wifi_config_save()/wifi_get_last_sta_creds() now come
 // from wifi_setup.h (2026-09-24).
@@ -106,6 +106,12 @@ typedef struct {
 #define MENU_SSID_MAX     32
 #define MENU_PASS_MAX     64
 #define MENU_SCAN_MAX     16      // max scanned networks shown in list
+
+// The menu's own copy of its scan results: restarting the multi-network
+// connect right after the scan starts another scan that replaces the shared
+// results, so reading them back later returned empty/other SSIDs. Written by
+// DisplayTask before scan_done is published, read by the renderer after.
+static char s_scan_ssids[MENU_SCAN_MAX][33];
 
 // Character input alphabet; '<' = backspace, '>' = done (must be last two)
 static const char MENU_CHARSET[] =
@@ -192,7 +198,7 @@ static volatile bool g_wifi_save_ready = false;
 // ---- helpers ---------------------------------------------------------------
 
 static void menu_activity() {
-    g_menu_input.last_activity = millis();
+    g_menu_input.last_activity = uptime_ms();
     g_menu_input.display_on    = true;
 }
 
@@ -512,7 +518,7 @@ static void menu_render_status() {
             if (trips[0]) {
                 menu_oled_line(2, "TRIP: %s", trips);
             } else {
-                menu_oled_line(2, "Prot:OK RSSI:%d", (int)WiFi.RSSI());
+                menu_oled_line(2, "Prot:OK RSSI:%d", (int)wifi_net_rssi());
             }
             menu_oled_line(3, "ROT=page BTN=back");
             break;
@@ -580,9 +586,9 @@ static void menu_render_wifi_mode() {
 
 static void menu_render_wifi_scan() {
     if (!g_menu.scan_done) {
-        int n = WiFi.scanComplete();
+        int n = wifi_net_scan_result();
         // Should not happen (scan is now synchronous), but guard just in case
-        if (n == WIFI_SCAN_RUNNING) {
+        if (n == WIFI_NET_SCAN_RUNNING) {
             menu_oled_line(0, "Scanning WiFi...");
             menu_oled_line(1, "");
             menu_oled_line(2, "Please wait");
@@ -611,7 +617,7 @@ static void menu_render_wifi_scan() {
         if (idx >= total) { menu_oled_line(r + 1, ""); continue; }
         bool sel = (idx == g_menu.scan_cursor);
         if (idx < g_menu.scan_count)
-            menu_oled_item(r + 1, sel, "%.18s", WiFi.SSID(idx).c_str());
+            menu_oled_item(r + 1, sel, "%.18s", s_scan_ssids[idx]);
         else
             menu_oled_item(r + 1, sel, "[ Cancel ]");
     }
@@ -898,7 +904,7 @@ static void menu_process_encoder() {
     // Used to live in menu_render() — moved here since it's a navigation
     // decision, not a rendering one, and belongs with the state owner.
     if (g_menu_input.screen != MENU_OFF && g_menu_input.screen != MENU_FUEL &&
-        (millis() - g_menu_input.last_activity) > MENU_TIMEOUT_MS) {
+        (uptime_ms() - g_menu_input.last_activity) > MENU_TIMEOUT_MS) {
         state cur_s;
         portENTER_CRITICAL(&g_state_spinlock);
         cur_s = g_state.current_state;
@@ -982,21 +988,24 @@ static void menu_process_encoder() {
                             // pass picks it up and shows "Scanning..." on its
                             // own, with zero I2C touched from this task.
                             menu_publish_snapshot();
-                            // Pause AsyncWiFiMulti, do sync scan, then restore
-                            asyncWifiMulti.clear();  // sets _status=Idle; ignores SCAN_DONE event
-                            delay(150);
+                            // Pause the multi-network connect, do sync scan, then restore
+                            wifi_net_multi_clear();  // status Idle: its scan-done handling is skipped
+                            vTaskDelay(pdMS_TO_TICKS(150));
                             esp_task_wdt_reset();  // scan is usually ~2-3s but not hard-bounded
-                            int n = WiFi.scanNetworks(false);  // blocking ~2-3s
+                            int n = wifi_net_scan_blocking();  // ~2-3s
                             esp_task_wdt_reset();
                             g_menu_input.scan_count = (n > 0) ? ((n > MENU_SCAN_MAX) ? MENU_SCAN_MAX : (int8_t)n) : 0;
+                            for (int i = 0; i < g_menu_input.scan_count; i++) {
+                                wifi_net_scan_ssid(i, s_scan_ssids[i], sizeof(s_scan_ssids[i]));
+                            }
                             g_menu_input.scan_done  = true;
                             // Restore AP list and restart async connection
                             {
                                 char sta_ssid[33], sta_pass[65];
                                 wifi_get_last_sta_creds(sta_ssid, sizeof(sta_ssid), sta_pass, sizeof(sta_pass));
-                                if (strlen(sta_ssid) > 0) asyncWifiMulti.addAP(sta_ssid, sta_pass);
+                                if (strlen(sta_ssid) > 0) wifi_net_multi_add(sta_ssid, sta_pass);
                             }
-                            asyncWifiMulti.start();
+                            wifi_net_multi_start();
                         } else {
                             g_menu_input.wifi_input_buf = g_menu_input.wifi_ssid;
                             g_menu_input.wifi_input_max = MENU_SSID_MAX;
@@ -1045,12 +1054,11 @@ static void menu_process_encoder() {
                 if (clicked) {
                     if (g_menu_input.scan_cursor == g_menu_input.scan_count) {
                         // Cancel selected
-                        WiFi.scanDelete();
+                        wifi_net_scan_clear();
                         menu_show(MENU_WIFI);
                     } else {
-                        strncpy(g_menu_input.wifi_ssid, WiFi.SSID(g_menu_input.scan_cursor).c_str(), MENU_SSID_MAX);
-                        g_menu_input.wifi_ssid[MENU_SSID_MAX] = '\0';
-                        WiFi.scanDelete();
+                        strlcpy(g_menu_input.wifi_ssid, s_scan_ssids[g_menu_input.scan_cursor], MENU_SSID_MAX + 1);
+                        wifi_net_scan_clear();
                         menu_show(MENU_WIFI);
                     }
                 }

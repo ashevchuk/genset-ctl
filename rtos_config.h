@@ -30,8 +30,8 @@
 #define TASK_PRIORITY_DISPLAY         2   // OLED updates
 #define TASK_PRIORITY_REPORT          2   // WebSocket broadcast
 #define TASK_PRIORITY_MQTT            2   // MQTT client
-#define TASK_PRIORITY_WEB             2   // WebServer::handleClient() + WebSocketsServer::loop()
-#define TASK_PRIORITY_I2C             2   // Sole owner of Wire — sensors, RTC, OLED, FRAM
+#define TASK_PRIORITY_WEB             2   // WebTask and the httpd task (http_server.cpp)
+#define TASK_PRIORITY_I2C             2   // Sole owner of the I2C bus — sensors, RTC, OLED, FRAM
 #define TASK_PRIORITY_ESPNOW          2   // ESP-NOW fallback link to the display
 
 // ============================================================================
@@ -43,9 +43,9 @@
 #define STACK_SIZE_DISPLAY         (6 * 1024)
 #define STACK_SIZE_REPORT          (4 * 1024)
 #define STACK_SIZE_MQTT            (5 * 1024)
-// Generous: this task also does the manual chunked-read/upload loops
-// in-task (see serve_static_ws()), instead of via an async callback.
-#define STACK_SIZE_WEB             (8 * 1024)
+// WebTask only polls UDP discovery; HTTP/WS handlers run on the httpd
+// task's own stack (HTTP_TASK_STACK, http_server.cpp).
+#define STACK_SIZE_WEB             (4 * 1024)
 // Generous: renders the OLED, reads all I2C sensors/RTC, and services FRAM
 // journal writes/reads — everything that used to be split across
 // SensorTask/DisplayTask's render half/LogTask.
@@ -73,7 +73,7 @@
 #define CORE_REPORT                0   // WebSocket on Core 0 with WiFi
 #define CORE_MQTT                  0   // MQTT on Core 0 with WiFi
 #define CORE_I2C                   1   // Same core as today's Sensor/Display/PowerMeter
-#define CORE_WEB                   0   // WebServer/WebSocketsServer on Core 0 with WiFi
+#define CORE_WEB                   0   // WebTask and the httpd task on Core 0 with WiFi
 #define CORE_ESPNOW                0   // Shares the WiFi driver with Report/Mqtt/Web
 
 // ============================================================================
@@ -302,7 +302,7 @@ typedef struct {
     uint8_t source;      // FLOG_SRC_* — who issued the command (for event log)
 } WebCommand_t;
 
-// Generic synchronous job for I2CTask (the sole owner of Wire). A caller on
+// Generic synchronous job for I2CTask (the sole owner of the I2C bus). A caller on
 // any other task builds one of these (with its own reusable static
 // SemaphoreHandle_t for `done`), sends it to xI2CJobQueue, and blocks on
 // `done` — see i2c_run_on_owner() in the main .ino. Used for the handful of
@@ -360,18 +360,18 @@ typedef struct {
 
 // Mutexes
 // xFlashI2CGuard: NOT about arbitrating logical I2C ownership (I2CTask is
-// the sole owner of Wire — see I2CJob_t above). Guards a distinct, already-
+// the sole owner of the I2C bus — see I2CJob_t above). Guards a distinct, already-
 // documented ESP32 hardware hazard instead: concurrent SPI-flash operations
-// (FFat reads in WebTask's serve_static_ws()/uploads/OTA) and I2C
+// (FFat reads, uploads and OTA in the HTTP server's handlers) and I2C
 // transactions can collide via spi_flash_guard_start() briefly disabling
-// cache on both cores. Taken by WebTask around its FFat chunk reads and by
-// I2CTask around its own real Wire transactions — the two participants on
+// cache on both cores. Taken by the HTTP handlers around each flash/FFat
+// operation and by
+// I2CTask around its own real I2C transactions — the two participants on
 // either side of that specific collision, nothing else.
 extern SemaphoreHandle_t xFlashI2CGuard;
 extern SemaphoreHandle_t xSerial2Mutex;
 extern SemaphoreHandle_t xShiftRegMutex;
 extern SemaphoreHandle_t xStateMutex;
-extern SemaphoreHandle_t xWsMutex;
 
 // Queues
 extern QueueHandle_t xPowerDataQueue;

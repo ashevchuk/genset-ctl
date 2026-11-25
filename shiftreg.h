@@ -1,6 +1,7 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include "rtos_config.h"  // SHIFT_REG/SHIFT_REG_IN enums
 
 // Physical shift-register I/O: SN74HC595N output register (relays/choke/
@@ -18,7 +19,8 @@
 extern uint16_t shift_reg;
 extern uint8_t shift_reg_in;
 
-#define SET_SHIFT_REG(REG, STATE) bitWrite(shift_reg, REG, STATE ? HIGH : LOW)
+#define SET_SHIFT_REG(REG, STATE) \
+  ((STATE) ? (shift_reg |= (uint16_t)(1u << (REG))) : (shift_reg &= (uint16_t)~(1u << (REG))))
 
 #define REG_SYNC_STATE() reg_write()
 

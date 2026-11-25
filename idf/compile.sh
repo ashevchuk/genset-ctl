@@ -13,21 +13,6 @@ source /opt/esp-idf/export.sh > /dev/null
 
 cd "$SCRIPT_DIR"
 
-# On a fresh clone managed_components/ doesn't exist yet — the component
-# manager only fetches it as part of an idf.py run (build/reconfigure), but
-# patch_arduino_esp32.sh needs the fetched source to already be there to
-# patch. `idf.py reconfigure` does the fetch without a full build, so a
-# first-ever checkout bootstraps itself here instead of failing outright.
-if [ ! -d "$SCRIPT_DIR/managed_components" ]; then
-    echo "managed_components/ not present yet (fresh checkout) — running idf.py reconfigure to fetch dependencies..."
-    idf.py reconfigure || exit 1
-fi
-
-# Re-applies (idempotently) a hand patch to the arduino-esp32 managed
-# component that idf.py's own component manager would otherwise silently
-# discard on a reconfigure/dependency refresh — see the script itself.
-./patch_arduino_esp32.sh || exit 1
-
 # Fresh esp_app_desc.version[] (yyyymmddhhmm) even on incremental rebuilds —
 # see bump_fw_version.sh.
 ./bump_fw_version.sh || exit 1

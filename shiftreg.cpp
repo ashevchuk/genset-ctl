@@ -13,6 +13,8 @@
 #include "buzzer.h"
 #include "debug.h"
 #include <esp_task_wdt.h>
+#include <driver/gpio.h>
+#include <esp_rom_sys.h>
 
 // ---- pins (private to this module — nothing outside it ever touched these
 // by name; confirmed via grep before the extraction) --------------------
@@ -27,6 +29,39 @@ enum {
   PIN_SHIFT_REG_IN_LATCH = 23, //(Storage register clock pin (latch pin))
   PIN_SHIFT_REG_IN_DATA = 19,  //(DATA_PIN)
 };
+
+// Native GPIO calls are several times faster than the Arduino wrappers this
+// bit-banging was tuned on; this pause keeps every clock phase at least as
+// long as before (the CD4021 input register is slow CMOS).
+#define SHIFT_CLOCK_PHASE_US 1
+
+static void pin_init(int pin, gpio_mode_t mode) {
+  gpio_config_t conf = {};
+  conf.pin_bit_mask = 1ULL << pin;
+  conf.mode = mode;
+  conf.pull_up_en = GPIO_PULLUP_DISABLE;
+  conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  conf.intr_type = GPIO_INTR_DISABLE;
+  gpio_config(&conf);
+}
+
+static inline void pin_write(int pin, uint32_t level) {
+  gpio_set_level((gpio_num_t)pin, level);
+}
+
+static inline int pin_read(int pin) {
+  return gpio_get_level((gpio_num_t)pin);
+}
+
+static void shift_out_msb_first(uint8_t val) {
+  for (int8_t i = 7; i >= 0; i--) {
+    pin_write(PIN_SHIFT_REG_DATA, (val >> i) & 1);
+    esp_rom_delay_us(SHIFT_CLOCK_PHASE_US);
+    pin_write(PIN_SHIFT_REG_CLOCK, 1);
+    esp_rom_delay_us(SHIFT_CLOCK_PHASE_US);
+    pin_write(PIN_SHIFT_REG_CLOCK, 0);
+  }
+}
 
 uint8_t shift_reg_in = 0;
 uint16_t shift_reg = 0;
@@ -81,15 +116,15 @@ uint8_t reg_read() {
   bool locked = shiftreg_lock();
   uint8_t myDataIn = 0;
 
-  digitalWrite(PIN_SHIFT_REG_IN_LATCH, HIGH);
+  pin_write(PIN_SHIFT_REG_IN_LATCH, 1);
 
   // set it to 1 to collect parallel data, wait
 
-  delayMicroseconds(20);
+  esp_rom_delay_us(20);
 
   // set it to 0 to transmit data serially
 
-  digitalWrite(PIN_SHIFT_REG_IN_LATCH, LOW);
+  pin_write(PIN_SHIFT_REG_IN_LATCH, 0);
 
   // we will be holding the clock pin high 8 times (0,..,7) at the
   // end of each time through the for loop
@@ -102,18 +137,18 @@ uint8_t reg_read() {
   // so that is why our function counts down
 
   for (int8_t i = 7; i >= 0; i--) {
-    delayMicroseconds(0.2);
+    esp_rom_delay_us(SHIFT_CLOCK_PHASE_US);
 
-    digitalWrite(PIN_SHIFT_REG_IN_CLOCK, LOW);
+    pin_write(PIN_SHIFT_REG_IN_CLOCK, 0);
 
-    delayMicroseconds(0.2);
+    esp_rom_delay_us(SHIFT_CLOCK_PHASE_US);
 
-    if (!digitalRead(PIN_SHIFT_REG_IN_DATA)) {
+    if (!pin_read(PIN_SHIFT_REG_IN_DATA)) {
       // set the bit to 0 no matter what
       myDataIn = myDataIn | (1 << i);
     }
 
-    digitalWrite(PIN_SHIFT_REG_IN_CLOCK, HIGH);
+    pin_write(PIN_SHIFT_REG_IN_CLOCK, 1);
   }
 
   shiftreg_unlock(locked);
@@ -130,13 +165,13 @@ uint8_t read_regs() {
 void setup_shift_reg_in() {
   shift_reg_in = 0;
 
-  pinMode(PIN_SHIFT_REG_IN_CLOCK, OUTPUT);
-  digitalWrite(PIN_SHIFT_REG_IN_CLOCK, HIGH);
+  pin_init(PIN_SHIFT_REG_IN_CLOCK, GPIO_MODE_INPUT_OUTPUT);
+  pin_write(PIN_SHIFT_REG_IN_CLOCK, 1);
 
-  pinMode(PIN_SHIFT_REG_IN_LATCH, OUTPUT);
-  digitalWrite(PIN_SHIFT_REG_IN_LATCH, HIGH);
+  pin_init(PIN_SHIFT_REG_IN_LATCH, GPIO_MODE_INPUT_OUTPUT);
+  pin_write(PIN_SHIFT_REG_IN_LATCH, 1);
 
-  pinMode(PIN_SHIFT_REG_IN_DATA, INPUT);
+  pin_init(PIN_SHIFT_REG_IN_DATA, GPIO_MODE_INPUT);
 
   read_regs();
 }
@@ -145,26 +180,26 @@ void reg_write() {
   bool locked = shiftreg_lock();
 
   // выключаем на время передачи битов
-  digitalWrite(PIN_SHIFT_REG_LATCH, LOW);
+  pin_write(PIN_SHIFT_REG_LATCH, 0);
 
   // разбиваем наши 16 бит на два байта
   // для записи в первый и второй регистр
-  byte registerOne = highByte(shift_reg);
-  byte registerTwo = lowByte(shift_reg);
+  uint8_t registerOne = (uint8_t)(shift_reg >> 8);
+  uint8_t registerTwo = (uint8_t)(shift_reg & 0xFF);
 
   // "проталкиваем" байты в регистры
-  shiftOut(PIN_SHIFT_REG_DATA, PIN_SHIFT_REG_CLOCK, MSBFIRST, registerTwo);
-  shiftOut(PIN_SHIFT_REG_DATA, PIN_SHIFT_REG_CLOCK, MSBFIRST, registerOne);
+  shift_out_msb_first(registerTwo);
+  shift_out_msb_first(registerOne);
 
   // "защелкиваем" регистр, чтобы биты появились на выходах регистра
-  digitalWrite(PIN_SHIFT_REG_LATCH, HIGH);
+  pin_write(PIN_SHIFT_REG_LATCH, 1);
 
   shiftreg_unlock(locked);
 }
 
 void reg_set_state(uint8_t reg, bool reg_state) {
   if (reg < 16) {
-    // Lock: bitWrite on shift_reg is a read-modify-write racing with
+    // Lock: SET_SHIFT_REG on shift_reg is a read-modify-write racing with
     // ShiftRegTask's command processing.
     bool locked = shiftreg_lock();
     SET_SHIFT_REG(reg, reg_state);
@@ -186,37 +221,36 @@ void reg_set(uint8_t reg, bool reg_state) {
 // in buzzer.cpp/buzzer.h — it only needs a physical on/off pin write, which
 // stays here since this file owns shift_reg/SET_SHIFT_REG.
 void shiftreg_write_buzzer(bool on) {
-    SET_SHIFT_REG(REG_BUZZER, on ? HIGH : LOW);
+    SET_SHIFT_REG(REG_BUZZER, on ? 1 : 0);
     reg_write();
 }
 
 void setup_shift_reg() {
   shift_reg = 0;
 
-  pinMode(PIN_SHIFT_REG_OUTPUT_ENABLE, OUTPUT); //(Output enable[active low])
-  digitalWrite(PIN_SHIFT_REG_OUTPUT_ENABLE, HIGH);
+  pin_init(PIN_SHIFT_REG_OUTPUT_ENABLE, GPIO_MODE_INPUT_OUTPUT); //(Output enable[active low])
+  pin_write(PIN_SHIFT_REG_OUTPUT_ENABLE, 1);
 
-  pinMode(PIN_SHIFT_REG_DATA, OUTPUT); //(DATA_PIN)
-  digitalWrite(PIN_SHIFT_REG_DATA, LOW);
+  pin_init(PIN_SHIFT_REG_DATA, GPIO_MODE_INPUT_OUTPUT); //(DATA_PIN)
+  pin_write(PIN_SHIFT_REG_DATA, 0);
 
-  pinMode(PIN_SHIFT_REG_LATCH,
-          OUTPUT); //(Storage register clock pin (latch pin))
-  digitalWrite(PIN_SHIFT_REG_LATCH, LOW);
+  pin_init(PIN_SHIFT_REG_LATCH, GPIO_MODE_INPUT_OUTPUT); //(Storage register clock pin (latch pin))
+  pin_write(PIN_SHIFT_REG_LATCH, 0);
 
-  pinMode(PIN_SHIFT_REG_CLOCK, OUTPUT); //(Shift register clock pin)
-  digitalWrite(PIN_SHIFT_REG_CLOCK, LOW);
+  pin_init(PIN_SHIFT_REG_CLOCK, GPIO_MODE_INPUT_OUTPUT); //(Shift register clock pin)
+  pin_write(PIN_SHIFT_REG_CLOCK, 0);
 
-  pinMode(PIN_SHIFT_REG_MASTER_CLEAR, OUTPUT); //(Master Reclear[active low])
-  digitalWrite(PIN_SHIFT_REG_MASTER_CLEAR, LOW);
-  delay(2);
-  digitalWrite(PIN_SHIFT_REG_MASTER_CLEAR, HIGH);
-  delay(2);
+  pin_init(PIN_SHIFT_REG_MASTER_CLEAR, GPIO_MODE_INPUT_OUTPUT); //(Master Reclear[active low])
+  pin_write(PIN_SHIFT_REG_MASTER_CLEAR, 0);
+  vTaskDelay(pdMS_TO_TICKS(2));
+  pin_write(PIN_SHIFT_REG_MASTER_CLEAR, 1);
+  vTaskDelay(pdMS_TO_TICKS(2));
 
   reg_write();
 
-  delay(2);
+  vTaskDelay(pdMS_TO_TICKS(2));
 
-  digitalWrite(PIN_SHIFT_REG_OUTPUT_ENABLE, LOW);
+  pin_write(PIN_SHIFT_REG_OUTPUT_ENABLE, 0);
 }
 
 // ----------------------------------------------------------------------------
@@ -245,11 +279,11 @@ void ShiftRegTask(void *pvParameters) {
                         reg_write();
                         break;
                     case CMD_REG_ON:
-                        SET_SHIFT_REG(cmd.reg, HIGH);
+                        SET_SHIFT_REG(cmd.reg, 1);
                         reg_write();
                         break;
                     case CMD_REG_OFF:
-                        SET_SHIFT_REG(cmd.reg, LOW);
+                        SET_SHIFT_REG(cmd.reg, 0);
                         reg_write();
                         break;
                     case CMD_REG_TOGGLE:

@@ -25,19 +25,3 @@ CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
 # output (Guru Meditation, backtrace) goes through a separate mechanism, not
 # ESP_LOG*, so this does not silence crash diagnostics on serial.
 CONFIG_LOG_DEFAULT_LEVEL_NONE=y
-
-# managed_components/espressif__arduino-esp32/Kconfig.projbuild — a THIRD,
-# separate logging system, arduino-esp32's own log_e()/log_w()/log_i()
-# (esp32-hal-log.h, the "[time][E][file:line] func(): msg" format), used
-# throughout the arduino-esp32 core/library code itself (WiFi, NetworkClient,
-# etc.) — NOT the same macros as this project's own SLOG_*() or ESP-IDF's
-# ESP_LOG*, and gated by its own independent compile-time level check
-# (#if ARDUHAL_LOG_LEVEL >= ...). Its own Kconfig default is
-# ARDUHAL_LOG_DEFAULT_LEVEL_ERROR, so log_e() calls (level 1, ERROR) stayed
-# compiled in even with both options above set — found live 2026-09-25 via
-# a real "NetworkClient.cpp:435] write(): fail ... Connection reset by peer"
-# line on a build with DEBUG_SERIAL_ENABLED=0 already flashed to production
-# (a benign disconnect message, but proof the "silent" build wasn't fully
-# silent). CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL is a distinct Kconfig namespace
-# from CONFIG_LOG_DEFAULT_LEVEL above — setting one does not set the other.
-CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL_NONE=y

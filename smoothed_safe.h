@@ -1,6 +1,7 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <Smoothed.h>
 
 // Guards every SmoothedSafe<T> instance (adc_1_0.../rpm_smoothed) — these are

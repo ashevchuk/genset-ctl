@@ -10,7 +10,8 @@
 #ifndef DATETIME_H
 #define DATETIME_H
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 
 #define SECONDS_FROM_1970_TO_2000 946684800UL  // Unixtime for 2000-01-01 00:00:00
 
@@ -21,9 +22,8 @@ public:
     DateTime(uint16_t year, uint8_t month, uint8_t day,
              uint8_t hour = 0, uint8_t min = 0, uint8_t sec = 0);
 
-    // From the compiler's __DATE__/__TIME__ macros, e.g. DateTime(F(__DATE__), F(__TIME__)).
+    // From the compiler's __DATE__/__TIME__ macros, e.g. DateTime(__DATE__, __TIME__).
     DateTime(const char *date, const char *time);
-    DateTime(const __FlashStringHelper *date, const __FlashStringHelper *time);
 
     uint16_t year(void) const { return 2000U + yOff_; }
     uint8_t month(void) const { return m_; }

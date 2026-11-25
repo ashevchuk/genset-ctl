@@ -6,6 +6,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <string.h>
+#include "uptime.h"
 
 static bool s_uart_ready = false;
 
@@ -63,7 +64,8 @@ bool Mcp39f511aDev::readExact(uint8_t *buf, size_t len, uint32_t timeoutMs) {
         int n = uart_read_bytes((uart_port_t)MCP39F511A_UART_NUM,
                                 buf + got, len - got,
                                 pdMS_TO_TICKS(remain_ms));
-        esp_task_wdt_reset();
+        // Also called from setup() on loopTask, which is not subscribed to the TWDT.
+        if (esp_task_wdt_status(NULL) == ESP_OK) esp_task_wdt_reset();
         if (n < 0) {
             return false;
         }
@@ -276,7 +278,7 @@ bool Mcp39f511aDev::readMeasurements(void) {
     measurements_.apparentPower = (float)sRaw * 0.001f;
     measurements_.frequency = (float)freqRaw / 1000.0f;
     measurements_.powerFactor = pfRaw / 32768.0f;
-    measurements_.timestamp = millis();
+    measurements_.timestamp = uptime_ms();
     measurements_.valid = true;
     return true;
 }

@@ -1,7 +1,7 @@
 #pragma once
 
-// ReportTask: periodic full-state broadcast over wsServer
-// (WebSockets4WebServer, sharing webServer's port 80 at /ws), plus a few
+// ReportTask: periodic full-state broadcast to the /ws clients
+// (http_ws_broadcast(), http_server.h), plus a few
 // once-per-boot/periodic housekeeping checks that
 // happened to live in the same task loop (I2CTask stall detection, delayed
 // OTA-image health confirmation when a soak timer was armed at boot, heap

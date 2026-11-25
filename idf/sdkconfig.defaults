@@ -1,42 +1,17 @@
-# AUTOSTART_ARDUINO: arduino-esp32-as-component provides app_main() itself
-# and calls initArduino()+setup()+loop() — main/main.cpp only needs to
-# implement setup()/loop() and include Arduino.h. See
-# ${ARDUINO_CORE}/Kconfig.projbuild and cores/esp32/main.cpp.
-CONFIG_AUTOSTART_ARDUINO=y
-
 # Matches the main controller board's chip (D0WD-Q5, see project memory) —
 # NOT the display sub-project's ESP32-S3, which is a separate target/project.
 CONFIG_IDF_TARGET="esp32"
 
-# arduino-esp32-as-component hard-requires this (CMake config-time check in
-# managed_components/espressif__arduino-esp32/CMakeLists.txt) — its own
-# delay()/millis() timing assumptions depend on a 1ms FreeRTOS tick, not
-# idf's own 100Hz/10ms default.
+# 1 ms tick instead of idf's 100 Hz default: task periods and short waits
+# throughout the firmware (pdMS_TO_TICKS of 1..10 ms) were tuned on it.
 CONFIG_FREERTOS_HZ=1000
 
-# NetworkClientSecure's ssl_client.cpp (part of arduino-esp32) hard-#errors
-# under idf's default -Werror if this is off — it's guarded by a #warning
-# that only becomes a hard build failure because idf treats warnings as
-# errors by default, unlike arduino-builder. This project's own code doesn't
-# currently use TLS (only PubSubClient/WebServer/HTTPClient over plain
-# HTTP/MQTT), but the library is compiled unconditionally as part of
-# arduino-esp32-as-component, so it needs to build clean regardless.
-CONFIG_MBEDTLS_PSK_MODES=y
-
-# The .ino genuinely uses try/catch (wsServer.broadcastTXT() heap-corruption
-# guard, see esp32-gen-ctl-ai-rtos.ino ~L7336) — idf disables C++ exceptions
-# by default (-fno-exceptions) while arduino-builder's precompiled
-# arduino-esp32 libs already have them enabled, which is why this compiled
-# fine there. Root-cause config fix, not a code change.
-CONFIG_COMPILER_CXX_EXCEPTIONS=y
-
-# setup_ntp() (esp32-gen-ctl-ai-rtos.ino) sets config.server_from_dhcp = true
+# setup_ntp() (i2c.cpp) sets config.server_from_dhcp = true
 # and wraps esp_netif_sntp_init() in ESP_ERROR_CHECK() — without this, lwip
 # rejects that config combination (ESP_ERR_INVALID_ARG) and the
 # ESP_ERROR_CHECK() aborts. Confirmed live 2026-09-20 via serial console on
 # the test rig: "Tried to configure SNTP server from DHCP, while disabled.
-# Please enable CONFIG_LWIP_DHCP_GET_NTP_SRV" — arduino-esp32's precompiled
-# sdkconfig already has this on, idf's from-scratch default doesn't.
+# Please enable CONFIG_LWIP_DHCP_GET_NTP_SRV". Off in idf's default.
 CONFIG_LWIP_DHCP_GET_NTP_SRV=y
 
 # Use the SAME partition table the device already has on flash (dual OTA app
@@ -70,8 +45,6 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
 # idf.py's fresh sdkconfig defaults to CONFIG_ESP_COREDUMP_ENABLE_TO_NONE —
 # meaning this build never once wrote a coredump on either of its two real
 # crashes so far (2026-09-20 SNTP abort, 2026-09-21 task_wdt/Report panic).
-# arduino-builder's precompiled sdkconfig already has this on, which is why
-# CLAUDE.md's coredump section only ever described that build's behavior.
 # Overwrite-on-new-panic is the DEFAULT once this is on: the refusal-to-
 # overwrite guard in espcoredump/src/core_dump_flash.c only exists behind
 # #if CONFIG_ESP_COREDUMP_FLASH_NO_OVERWRITE, whose own Kconfig default is
@@ -88,11 +61,22 @@ CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 # gets marked ABORTED at the very start of slot selection, before the other
 # slot is even considered) automatically reverts to the previously-working
 # OTA slot on that next boot. Off by default in a from-scratch idf.py
-# sdkconfig (unlike arduino-builder's precompiled one) — found live
+# sdkconfig — found live
 # 2026-09-25 the hard way: a bad nodebug OTA bootlooped forever with no
 # safety net at all, because this was never turned on. See CLAUDE.md's FRAM
-# event journal section for the actual bug that build hit, and see
-# esp32-hal-misc.c's initArduino()/verifyRollbackLater() for why this is
-# safe to combine with ReportTask's own 10-minute soak instead of the two
-# fighting each other.
+# event journal section for the actual bug that build hit. Nothing but
+# ReportTask's 10-minute soak confirms a pending image (report.cpp).
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# WebSocket support in esp_http_server.
+CONFIG_HTTPD_WS_SUPPORT=y
+# ESP-IDF 6.x no longer calls the WS URI handler for the handshake; this
+# callback is the only point where a new client can be registered.
+CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y
+# Under esp_http_server HTTP and WebSocket clients share the lwip socket
+# pool: 16 WS/HTTP connections plus httpd listen/control, MQTT, UDP
+# discovery and DNS/SNTP need about 22.
+CONFIG_LWIP_MAX_SOCKETS=24
+# lwip's active-TCP limit (default 16) is a separate cap: 16 WS clients plus
+# MQTT and in-flight HTTP requests need more, or new SYNs are silently dropped.
+CONFIG_LWIP_MAX_ACTIVE_TCP=24

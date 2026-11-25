@@ -1,5 +1,7 @@
 #include "ads1115_dev.h"
-#include <Wire.h>
+#include "i2c_bus.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define ADS1115_REG_CONV      0x00
 #define ADS1115_REG_CONFIG    0x01
@@ -14,35 +16,24 @@
 #define ADS1115_BASE_CONFIG (0x0200 | 0x0000 | 0x00A0 | 0x0003)
 
 bool Ads1115Dev::writeRegister(uint8_t reg, uint16_t val) {
-    Wire.beginTransmission(addr_);
-    Wire.write(reg);
-    Wire.write((uint8_t)(val >> 8));
-    Wire.write((uint8_t)(val & 0xFF));
-    return Wire.endTransmission() == 0;
+    uint8_t buf[3] = {reg, (uint8_t)(val >> 8), (uint8_t)(val & 0xFF)};
+    return i2c_bus_write(addr_, buf, sizeof(buf));
 }
 
 bool Ads1115Dev::readRegister(uint8_t reg, uint16_t &val) {
-    Wire.beginTransmission(addr_);
-    Wire.write(reg);
-    // Plain STOP, not repeated start: Wire.setTimeOut() does not bound a
-    // repeated-start (endTransmission(false)) transaction, so a slave that
-    // clock-stretches indefinitely can wedge this whole task holding
-    // xI2CMutex (see esp32-gen-ctl-ai-rtos.ino's upload-handler comment).
-    // Releasing the bus between the pointer write and the data read keeps
-    // both steps individually bounded by the 50ms timeout.
-    if (Wire.endTransmission() != 0) return false;
-    if (Wire.requestFrom((int)addr_, 2) != 2) return false;
-    if (!Wire.available()) return false;
-    uint8_t msb = Wire.read();
-    if (!Wire.available()) return false;
-    uint8_t lsb = Wire.read();
-    val = ((uint16_t)msb << 8) | lsb;
+    // Plain STOP, not repeated start, between the pointer write and the data
+    // read: each step is its own transaction, individually bounded by the
+    // bus timeout (i2c_bus.cpp), so a slave that clock-stretches
+    // indefinitely can only stall one bounded step.
+    if (!i2c_bus_write(addr_, &reg, 1)) return false;
+    uint8_t buf[2];
+    if (!i2c_bus_read(addr_, buf, sizeof(buf))) return false;
+    val = ((uint16_t)buf[0] << 8) | buf[1];
     return true;
 }
 
 bool Ads1115Dev::init(void) {
-    Wire.beginTransmission(addr_);
-    if (Wire.endTransmission() != 0) return false;
+    if (!i2c_bus_probe(addr_)) return false;
 
     // Disable the comparator/ALERT pin outright (matches the original
     // library's init(), which writes these even though COMP_QUE=3 above
@@ -55,7 +46,7 @@ bool Ads1115Dev::init(void) {
 
 bool Ads1115Dev::setCompareChannels(ADS1115_MUX mux) {
     if (!writeRegister(ADS1115_REG_CONFIG, ADS1115_BASE_CONFIG | mux)) return false;
-    delay(8);  // two conversions at 250 SPS before the new channel settles
+    vTaskDelay(pdMS_TO_TICKS(8));  // two conversions at 250 SPS before the new channel settles
     return true;
 }
 

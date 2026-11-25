@@ -1,5 +1,6 @@
 #include "buzzer.h"
 #include "rtos_config.h"
+#include "uptime.h"
 
 // Buzzer state - managed by ShiftRegTask via buzzer_process()
 static BuzzerState_t g_buzzer_state = {
@@ -90,7 +91,7 @@ void buzzer_process(void) {
                 g_buzzer_state.pause_ms = cmd.pause_ms;
                 g_buzzer_state.count = cmd.count;
                 g_buzzer_state.total_count = cmd.count;
-                g_buzzer_state.next_toggle = millis() + cmd.duration_ms;
+                g_buzzer_state.next_toggle = uptime_ms() + cmd.duration_ms;
 
                 shiftreg_write_buzzer(true);
                 break;
@@ -107,9 +108,9 @@ void buzzer_process(void) {
 
     // Process ongoing beep pattern
     if (g_buzzer_state.active) {
-        uint32_t now = millis();
+        uint32_t now = uptime_ms();
 
-        // Use signed comparison to handle millis() overflow correctly
+        // Use signed comparison to handle uptime_ms() overflow correctly
         if ((int32_t)(now - g_buzzer_state.next_toggle) >= 0) {
             if (g_buzzer_state.buzzer_on) {
                 g_buzzer_state.buzzer_on = false;

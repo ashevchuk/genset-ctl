@@ -4,7 +4,7 @@
 
 The generator controller exposes a full MQTT interface for remote monitoring and control. MQTT is optional and can be enabled or disabled via the WiFi configuration page (`/wifi-config`). Settings are persisted in `/wifi.json` on the FFat filesystem.
 
-MQTT (`PubSubClient`, its own TCP connection to the broker) is independent of the controller's HTTP/WebSocket web interface — unaffected by the 2026-07-27 migration of that stack from ESPAsyncWebServer/AsyncTCP to `WebServer`/`WebSocketsServer`, or by the 2026-09-25 change that put WebSocket on the same port 80 as HTTP, at `ws://<host>/ws` (previously its own port 81). Commands and state converge on the same `xWebCommandQueue`/`StateMachineTask` path described below regardless of which interface they arrive through.
+MQTT (ESP-IDF's `esp-mqtt` client, managed component `espressif/mqtt`, its own TCP connection to the broker) is independent of the controller's HTTP/WebSocket web interface — unaffected by the changes to that stack (now ESP-IDF `esp_http_server` on port 80, WebSocket at `ws://<host>/ws`). Commands and state converge on the same `xWebCommandQueue`/`StateMachineTask` path described below regardless of which interface they arrive through.
 
 All topics share a configurable **topic prefix** (default: `gen-ctl`). Examples below use `gen-ctl` as the prefix.
 
@@ -251,8 +251,8 @@ sensor smoothed values every 100 ms,
 publishes gen-ctl/state every 5 s or on state change.
 ```
 
-- **Thread safety**: `PubSubClient` is accessed exclusively by `MqttTask`. State snapshot is taken under `g_state_spinlock` (portENTER_CRITICAL). Commands are sent to `xWebCommandQueue` (FreeRTOS queue, ISR-safe).
-- **Reconnect**: on lost connection MqttTask retries every 5 seconds without blocking other tasks.
+- **Thread safety**: `esp-mqtt` runs its own client task; incoming `cmd/#` messages are handled there and only posted to `xWebCommandQueue` (FreeRTOS queue) or the journal queue, never acted on directly. `MqttTask` only publishes. State snapshot is taken under `g_state_spinlock` (portENTER_CRITICAL).
+- **Reconnect**: the `esp-mqtt` client reconnects on its own every 5 seconds and resubscribes on each connect; `MqttTask` publishes only while connected. Each publish is bounded by a 5 s network timeout.
 - **Watchdog**: MqttTask is registered with the ESP32 Task WDT (15 s timeout); disabled MQTT still feeds the WDT in its idle loop.
 
 ---

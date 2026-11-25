@@ -1,8 +1,10 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <time.h>
 
-// I2CTask: sole owner of Wire — ADS1115×2, INA233, MCP9600, DS3231 RTC,
+// I2CTask: sole owner of the I2C bus — ADS1115×2, INA233, MCP9600, DS3231 RTC,
 // SSD1306 OLED (via oled_menu.cpp's i2c_render_display()), FM24V10 FRAM
 // (via fram_log.cpp's fram_log_service_tick()); tacho. Also owns the
 // on-demand I2CJob_t job queue (i2c_run_on_owner(), prototype in

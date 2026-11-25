@@ -21,8 +21,10 @@
 #include "debug.h"
 #include "ina233_dev.h"
 #include "buzzer.h"
+#include <math.h>
 #include "shared_defines.h" // CURRENT_TIME/ADC2_SMOOTH/FUEL_PUMP_RISE_HYSTERESIS_L
 #include <esp_task_wdt.h>
+#include "uptime.h"
 
 // ---- externs into esp32-gen-ctl-ai-rtos.cpp's own globals ------------------
 extern bool ina233_present;   // set in setup(), avoids repeated NACK if sensor absent
@@ -114,7 +116,7 @@ void measure_bat_voltage() {
   // BAT
   if (IS_REG_IN_ON(REG_IN_BAT_SENSE)) {
     read_ina233_now(&voltage);
-    SDEBUG_CHARGING("[BAT] measure_bat_voltage: battery already online, raw=", String(voltage, 3), "V");
+    SDEBUG_CHARGING("[BAT] measure_bat_voltage: battery already online, raw=", dbg_fixed(voltage, 3), "V");
   } else {
     if (IS_REG_OFF(REG_BATT_FORCE)) {
       SDEBUG_CHARGING("[BAT] measure_bat_voltage: BAT_SENSE=OFF, enabling BATT_FORCE to connect battery for measurement");
@@ -141,7 +143,7 @@ void measure_bat_voltage() {
         unsigned long long settleStart = CURRENT_TIME;
         double prevVoltage = 0.0;
         bool haveFirst = false;
-        bool settled = false;
+        [[maybe_unused]] bool settled = false;  // read only by SDEBUG_CHARGING
 
         do {
           vTaskDelay(pdMS_TO_TICKS(BAT_FORCE_STABLE_INTERVAL_MS));
@@ -155,7 +157,7 @@ void measure_bat_voltage() {
           haveFirst = true;
         } while (CURRENT_TIME - settleStart < BAT_FORCE_STABLE_MAX_MS);
 
-        SDEBUG_CHARGING("[BAT] measure_bat_voltage: battery connected, raw=", String(voltage, 3),
+        SDEBUG_CHARGING("[BAT] measure_bat_voltage: battery connected, raw=", dbg_fixed(voltage, 3),
                "V (", settled ? "settled" : "gave up waiting to settle",
                ", total wait ", (unsigned long)(CURRENT_TIME - waitTime), "ms)");
       } else {
@@ -184,14 +186,18 @@ void measure_bat_voltage() {
     }
   }
 
+  // Reschedule after every attempt, not only a successful one: with the
+  // battery absent each attempt pulses BATT_FORCE/BATT_OFF, and a stale
+  // readBatTime made StateMachineTask retry (and click the relays) every tick.
+  readBatTime = CURRENT_TIME;
+
   if (voltage > 0.0) {
     for (uint8_t i = 0; i < ADC2_SMOOTH; i++) {
       adc_2_1.add(voltage);
     }
-    readBatTime = CURRENT_TIME;
-    SDEBUG_CHARGING("[BAT] measure_bat_voltage: stored raw=", String(voltage, 3), "V smoothed=", String(adc_2_1.get(), 3), "V");
+    SDEBUG_CHARGING("[BAT] measure_bat_voltage: stored raw=", dbg_fixed(voltage, 3), "V smoothed=", dbg_fixed(adc_2_1.get(), 3), "V");
   } else {
-    SDEBUG_CHARGING("[BAT] measure_bat_voltage: no valid voltage, smoothed unchanged=", String(adc_2_1.get(), 3), "V");
+    SDEBUG_CHARGING("[BAT] measure_bat_voltage: no valid voltage, smoothed unchanged=", dbg_fixed(adc_2_1.get(), 3), "V");
   }
 }
 
@@ -321,7 +327,7 @@ void psu_backup_check(void) {
   psu_backup_prev_ext_power_ok = ext_power_ok_now;
 }
 
-// millis() when the current engine session started (entered STATE_STARTED);
+// uptime_ms() when the current engine session started (entered STATE_STARTED);
 // 0 = no session. Survives STOPPING->STARTED bounce (stop failed).
 static uint32_t flog_session_start_ms = 0;
 
@@ -365,7 +371,7 @@ bool safety_start_inhibited(void) {
 
 void flog_charge_started(bool auto_started) {
   flog_charge_active = true;
-  flog_charge_start_ms = millis();
+  flog_charge_start_ms = uptime_ms();
   fram_log_set_charging(true);
   FramLogRecord r = {};
   r.type = FLOG_EV_CHARGE_START;
@@ -381,7 +387,7 @@ void flog_charge_stopped(uint8_t reason) {
   FramLogRecord r = {};
   r.type = FLOG_EV_CHARGE_STOP;
   r.d.charge_stop.bat_v = (float)adc_2_1.get();
-  r.d.charge_stop.charge_seconds = (millis() - flog_charge_start_ms) / 1000;
+  r.d.charge_stop.charge_seconds = (uptime_ms() - flog_charge_start_ms) / 1000;
   r.d.charge_stop.reason = reason;
   fram_log_event(&r);
 }
@@ -395,7 +401,7 @@ void flog_on_transition(state old_s, state new_s) {
   switch (new_s) {
   case STATE_STARTED:
     if (flog_session_start_ms != 0) break;  // stop failed, engine never stopped
-    flog_session_start_ms = millis();
+    flog_session_start_ms = uptime_ms();
     r.type = FLOG_EV_START_OK;
     r.d.start_ok.attempts = was_starting ? (uint8_t)(startTry > 0 ? startTry : 1) : 0;
     r.d.start_ok.detected = was_starting ? 0 : 1;  // found running without a start sequence
@@ -422,7 +428,7 @@ void flog_on_transition(state old_s, state new_s) {
       fram_log_event(&r);
     } else if ((old_s == STATE_RUNNING || old_s == STATE_STARTED) &&
                flog_session_start_ms != 0 &&
-               millis() - flog_last_stop_req_ms > 10000) {
+               uptime_ms() - flog_last_stop_req_ms > 10000) {
       // Engine died without a stop command — classify by protection inputs
       uint8_t inputs;
       portENTER_CRITICAL(&g_state_spinlock);
@@ -436,7 +442,7 @@ void flog_on_transition(state old_s, state new_s) {
       else                                      r.d.emergency.reason = FLOG_REASON_STALLED;
       r.d.emergency.inputs = inputs;
       r.d.emergency.head_temp = flog_head_temp();
-      r.d.emergency.run_seconds = (millis() - flog_session_start_ms) / 1000;
+      r.d.emergency.run_seconds = (uptime_ms() - flog_session_start_ms) / 1000;
       fram_log_event(&r);
       buzzerAlarm();  // silenced once we actually reach STOPPED/IDLE below — see there
     }
@@ -452,7 +458,7 @@ void flog_on_transition(state old_s, state new_s) {
     buzzerStop();
     if (flog_session_start_ms != 0) {
       r.type = FLOG_EV_STOPPED;
-      r.d.stopped.run_seconds = (millis() - flog_session_start_ms) / 1000;
+      r.d.stopped.run_seconds = (uptime_ms() - flog_session_start_ms) / 1000;
       r.d.stopped.head_temp = flog_head_temp();
       r.d.stopped.fuel_l = (float)fuel_level_from_adc(adc_2_0.get());
       fram_log_event(&r);
@@ -545,14 +551,14 @@ bool process_STATE_IDLE(void) {
           measure_bat_voltage();
           // Refresh bat_v so the stop check below uses the fresh reading
           bat_v = adc_2_1.get();
-          SDEBUG_CHARGING("[BAT] IDLE: measurement done, bat=", String(bat_v, 3), "V");
+          SDEBUG_CHARGING("[BAT] IDLE: measurement done, bat=", dbg_fixed(bat_v, 3), "V");
         }
 
-        SDEBUG_CHARGING("[BAT] IDLE: charging in progress — bat=", String(bat_v, 3),
-               "V stop_threshold=", String((double)g_battery_config.threshold_stop_charge_v, 2), "V");
+        SDEBUG_CHARGING("[BAT] IDLE: charging in progress — bat=", dbg_fixed(bat_v, 3),
+               "V stop_threshold=", dbg_fixed((double)g_battery_config.threshold_stop_charge_v, 2), "V");
         if (bat_v >= g_battery_config.threshold_stop_charge_v) {
-          SDEBUG_CHARGING("[BAT] IDLE: STOP CHARGING — bat=", String(bat_v, 3),
-                 "V >= threshold=", String((double)g_battery_config.threshold_stop_charge_v, 2), "V, disabling charger");
+          SDEBUG_CHARGING("[BAT] IDLE: STOP CHARGING — bat=", dbg_fixed(bat_v, 3),
+                 "V >= threshold=", dbg_fixed((double)g_battery_config.threshold_stop_charge_v, 2), "V, disabling charger");
           charging = false;
           flog_charge_stopped(FLOG_CHG_THRESHOLD);
           REG_OFF(REG_CHARGER);
@@ -564,7 +570,7 @@ bool process_STATE_IDLE(void) {
         }
       } else {
         // CHARGER relay is ON but charging flag is false — sync flag
-        SDEBUG_CHARGING("[BAT] IDLE: charger relay ON but charging=false — syncing flag to true, bat=", String(bat_v, 3), "V");
+        SDEBUG_CHARGING("[BAT] IDLE: charger relay ON but charging=false — syncing flag to true, bat=", dbg_fixed(bat_v, 3), "V");
         charging = true;
         flog_charge_started(false);  // relay turned on manually (web/MQTT)
         readBatPeriod = g_battery_config.read_charging_period_ms;
@@ -573,7 +579,7 @@ bool process_STATE_IDLE(void) {
       }
     } else {
       // PSU disappeared — turn off charger
-      SDEBUG_CHARGING("[BAT] IDLE: STOP CHARGING — PSU_SENSE went OFF while charger was running, bat=", String(bat_v, 3), "V");
+      SDEBUG_CHARGING("[BAT] IDLE: STOP CHARGING — PSU_SENSE went OFF while charger was running, bat=", dbg_fixed(bat_v, 3), "V");
       charging = false;
       flog_charge_stopped(FLOG_CHG_PSU_LOST);
       REG_OFF(REG_CHARGER);
@@ -587,7 +593,7 @@ bool process_STATE_IDLE(void) {
     // Charger relay is OFF
     if (charging) {
       // Flag out of sync with relay
-      SDEBUG_CHARGING("[BAT] IDLE: charger relay OFF but charging=true — syncing flag to false, bat=", String(bat_v, 3), "V");
+      SDEBUG_CHARGING("[BAT] IDLE: charger relay OFF but charging=true — syncing flag to false, bat=", dbg_fixed(bat_v, 3), "V");
       charging = false;
       flog_charge_stopped(FLOG_CHG_MANUAL);  // relay turned off manually (web/MQTT)
       readBatPeriod = g_battery_config.read_after_run_period_ms;
@@ -601,12 +607,12 @@ bool process_STATE_IDLE(void) {
                "s >= period=", (unsigned long)(readBatPeriod / 1000), "s)");
         measure_bat_voltage();
         bat_v = adc_2_1.get();
-        SDEBUG_CHARGING("[BAT] IDLE: measurement done, bat=", String(bat_v, 3), "V");
+        SDEBUG_CHARGING("[BAT] IDLE: measurement done, bat=", dbg_fixed(bat_v, 3), "V");
       }
 
       if (psu_ok) {
-        SDEBUG_CHARGING("[BAT] IDLE: PSU OK, bat=", String(bat_v, 3),
-               "V start_threshold=", String((double)g_battery_config.threshold_start_charge_v, 2),
+        SDEBUG_CHARGING("[BAT] IDLE: PSU OK, bat=", dbg_fixed(bat_v, 3),
+               "V start_threshold=", dbg_fixed((double)g_battery_config.threshold_start_charge_v, 2),
                "V — ", bat_v <= g_battery_config.threshold_start_charge_v ? "START CHARGING" : "no charging needed");
         if (bat_v <= g_battery_config.threshold_start_charge_v) {
           if (charge_pending_since_ms == 0) {
@@ -622,9 +628,9 @@ bool process_STATE_IDLE(void) {
           uint32_t pending_elapsed_s = (uint32_t)(CURRENT_TIME - charge_pending_since_ms) / 1000;
           if (g_battery_config.start_charge_persist_time_s == 0 ||
               pending_elapsed_s >= g_battery_config.start_charge_persist_time_s) {
-            SDEBUG_CHARGING("[BAT] IDLE: START CHARGING — bat=", String(bat_v, 3),
-                   "V <= threshold=", String((double)g_battery_config.threshold_start_charge_v, 2),
-                   "V for ", String(pending_elapsed_s), "s, enabling charger");
+            SDEBUG_CHARGING("[BAT] IDLE: START CHARGING — bat=", dbg_fixed(bat_v, 3),
+                   "V <= threshold=", dbg_fixed((double)g_battery_config.threshold_start_charge_v, 2),
+                   "V for ", pending_elapsed_s, "s, enabling charger");
             charging = true;
             flog_charge_started(true);
             REG_ON(REG_CHARGER);
@@ -635,10 +641,10 @@ bool process_STATE_IDLE(void) {
             SDEBUG_CHARGING("[BAT] IDLE: charger ON, bat measurement every ",
                    (unsigned long)(readBatPeriod / 1000), "s via BATT_FORCE pulse");
           } else {
-            SDEBUG_CHARGING("[BAT] IDLE: bat=", String(bat_v, 3),
-                   "V <= start_threshold=", String((double)g_battery_config.threshold_start_charge_v, 2),
-                   "V for ", String(pending_elapsed_s), "s (need ",
-                   String(g_battery_config.start_charge_persist_time_s), "s before starting charger)");
+            SDEBUG_CHARGING("[BAT] IDLE: bat=", dbg_fixed(bat_v, 3),
+                   "V <= start_threshold=", dbg_fixed((double)g_battery_config.threshold_start_charge_v, 2),
+                   "V for ", pending_elapsed_s, "s (need ",
+                   (g_battery_config.start_charge_persist_time_s), "s before starting charger)");
           }
         } else {
           // bat_v recovered above threshold without ever completing the
@@ -654,7 +660,7 @@ bool process_STATE_IDLE(void) {
           charge_pending_since_ms = 0;
         }
       } else {
-        SDEBUG_CHARGING("[BAT] IDLE: PSU_SENSE=OFF, charging not possible, bat=", String(bat_v, 3), "V");
+        SDEBUG_CHARGING("[BAT] IDLE: PSU_SENSE=OFF, charging not possible, bat=", dbg_fixed(bat_v, 3), "V");
         if (charge_pending_since_ms != 0) {
           afterRunPeriodTime = CURRENT_TIME;
         }
@@ -700,9 +706,9 @@ bool process_STATE_IDLE(void) {
       uint32_t low_elapsed_s = (uint32_t)(CURRENT_TIME - batt_low_since_ms) / 1000;
       if (g_battery_config.shutdown_persist_time_s == 0 ||
           low_elapsed_s >= g_battery_config.shutdown_persist_time_s) {
-        SDEBUG_CHARGING("[BAT] IDLE: SHUTDOWN — bat-only supply, bat=", String(bat_v, 3),
-               "V <= shutdown_threshold=", String((double)g_battery_config.threshold_shutdown_v, 2),
-               "V for ", String(low_elapsed_s), "s, disabling battery");
+        SDEBUG_CHARGING("[BAT] IDLE: SHUTDOWN — bat-only supply, bat=", dbg_fixed(bat_v, 3),
+               "V <= shutdown_threshold=", dbg_fixed((double)g_battery_config.threshold_shutdown_v, 2),
+               "V for ", low_elapsed_s, "s, disabling battery");
         REG_OFF(REG_BATT_FORCE); // shutdown bat only supply
         REG_ON(REG_BATT_OFF);
         FramLogRecord r = {};
@@ -712,10 +718,10 @@ bool process_STATE_IDLE(void) {
         fram_log_event(&r);
         batt_low_since_ms = 0;
       } else {
-        SDEBUG_CHARGING("[BAT] IDLE: bat-only supply, bat=", String(bat_v, 3),
-               "V <= shutdown_threshold=", String((double)g_battery_config.threshold_shutdown_v, 2),
-               "V for ", String(low_elapsed_s), "s (need ",
-               String(g_battery_config.shutdown_persist_time_s), "s before shutdown)");
+        SDEBUG_CHARGING("[BAT] IDLE: bat-only supply, bat=", dbg_fixed(bat_v, 3),
+               "V <= shutdown_threshold=", dbg_fixed((double)g_battery_config.threshold_shutdown_v, 2),
+               "V for ", low_elapsed_s, "s (need ",
+               (g_battery_config.shutdown_persist_time_s), "s before shutdown)");
       }
     } else {
       batt_low_since_ms = 0;
@@ -874,16 +880,16 @@ bool switch_STATE_STARTING(void) {
   bool result = true;
 
   SDEBUG("Switch state STARTING");
-  SDEBUG_CHARGING("[BAT] switch STARTING: disabling charger (engine start sequence), bat=", String(adc_2_1.get(), 3), "V");
+  SDEBUG_CHARGING("[BAT] switch STARTING: disabling charger (engine start sequence), bat=", dbg_fixed(adc_2_1.get(), 3), "V");
 
   {
     float head_temp = flog_head_temp_or_warm();
     if (head_temp < g_limits_config.choke_cold_start_temp) {
-      SDEBUG("[CHOKE] Cold start: head_temp=", String(head_temp, 1), " < ", String((double)g_limits_config.choke_cold_start_temp, 1), " — choke ON");
+      SDEBUG("[CHOKE] Cold start: head_temp=", dbg_fixed(head_temp, 1), " < ", dbg_fixed((double)g_limits_config.choke_cold_start_temp, 1), " — choke ON");
       choke_ensure_battery();
       REG_ON_STATE(REG_CHOKE);
     } else {
-      SDEBUG("[CHOKE] Warm start: head_temp=", String(head_temp, 1), " >= ", String((double)g_limits_config.choke_cold_start_temp, 1), " — choke OFF");
+      SDEBUG("[CHOKE] Warm start: head_temp=", dbg_fixed(head_temp, 1), " >= ", dbg_fixed((double)g_limits_config.choke_cold_start_temp, 1), " — choke OFF");
       REG_OFF_STATE(REG_CHOKE);
     }
   }
@@ -913,7 +919,7 @@ bool switch_STATE_STARTING_SINGLE(void) {
   bool result = true;
 
   SDEBUG("Switch state STARTING_SINGLE");
-  SDEBUG_CHARGING("[BAT] switch STARTING_SINGLE: disabling charger (single-try start), bat=", String(adc_2_1.get(), 3), "V");
+  SDEBUG_CHARGING("[BAT] switch STARTING_SINGLE: disabling charger (single-try start), bat=", dbg_fixed(adc_2_1.get(), 3), "V");
 
   REG_OFF_STATE(REG_IGNITION);
   REG_OFF_STATE(REG_START);
@@ -940,7 +946,7 @@ bool switch_STATE_STARTING_RETRY(void) {
   bool result = true;
 
   SDEBUG("Switch state STARTING_RETRY");
-  SDEBUG_CHARGING("[BAT] switch STARTING_RETRY: disabling charger (retry start sequence), bat=", String(adc_2_1.get(), 3), "V");
+  SDEBUG_CHARGING("[BAT] switch STARTING_RETRY: disabling charger (retry start sequence), bat=", dbg_fixed(adc_2_1.get(), 3), "V");
 
   REG_OFF_STATE(REG_IGNITION);
   REG_OFF_STATE(REG_START);
@@ -967,16 +973,16 @@ bool switch_STATE_STARTING_RETRY_TRY(void) {
   bool result = true;
 
   SDEBUG("Switch state STATE_STARTING_RETRY_TRY");
-  SDEBUG_CHARGING("[BAT] switch STARTING_RETRY_TRY: disabling charger (retry attempt #", startTry + 1, "), bat=", String(adc_2_1.get(), 3), "V");
+  SDEBUG_CHARGING("[BAT] switch STARTING_RETRY_TRY: disabling charger (retry attempt #", startTry + 1, "), bat=", dbg_fixed(adc_2_1.get(), 3), "V");
 
   {
     float head_temp = flog_head_temp_or_warm();
     if (head_temp < g_limits_config.choke_cold_start_temp) {
-      SDEBUG("[CHOKE] Cold retry: head_temp=", String(head_temp, 1), " < ", String((double)g_limits_config.choke_cold_start_temp, 1), " — choke ON");
+      SDEBUG("[CHOKE] Cold retry: head_temp=", dbg_fixed(head_temp, 1), " < ", dbg_fixed((double)g_limits_config.choke_cold_start_temp, 1), " — choke ON");
       choke_ensure_battery();
       REG_ON_STATE(REG_CHOKE);
     } else {
-      SDEBUG("[CHOKE] Warm retry: head_temp=", String(head_temp, 1), " >= ", String((double)g_limits_config.choke_cold_start_temp, 1), " — choke OFF");
+      SDEBUG("[CHOKE] Warm retry: head_temp=", dbg_fixed(head_temp, 1), " >= ", dbg_fixed((double)g_limits_config.choke_cold_start_temp, 1), " — choke OFF");
       REG_OFF_STATE(REG_CHOKE);
     }
   }
@@ -1008,7 +1014,7 @@ bool switch_STATE_STARTED(void) {
   bool result = true;
 
   SDEBUG("Switch state STATED");
-  SDEBUG_CHARGING("[BAT] switch STARTED: disabling charger (generator engine started), bat=", String(adc_2_1.get(), 3), "V");
+  SDEBUG_CHARGING("[BAT] switch STARTED: disabling charger (generator engine started), bat=", dbg_fixed(adc_2_1.get(), 3), "V");
 
   REG_OFF_STATE(REG_IGNITION);
   REG_OFF_STATE(REG_START);
@@ -1045,7 +1051,7 @@ bool switch_STATE_RUNNING(void) {
   bool result = true;
 
   SDEBUG("Switch state RUNNING");
-  SDEBUG_CHARGING("[BAT] switch RUNNING: disabling charger (generator running), bat=", String(adc_2_1.get(), 3),
+  SDEBUG_CHARGING("[BAT] switch RUNNING: disabling charger (generator running), bat=", dbg_fixed(adc_2_1.get(), 3),
          "V, read period=", (unsigned long)(g_battery_config.read_running_period_ms / 1000), "s");
 
   REG_OFF_STATE(REG_IGNITION);
@@ -1408,13 +1414,12 @@ void StateMachineTask(void *pvParameters) {
     (void)pvParameters;
     esp_task_wdt_add(NULL);  // self-register before first wdt_reset
     WebCommand_t web_cmd;
-    EventBits_t events;
 
     SLOG_PRINTLN("StateMachineTask started");
 
     for (;;) {
         // Wait for events with timeout
-        events = xEventGroupWaitBits(
+        (void)xEventGroupWaitBits(
             xStateEvents,
             EVENT_SENSOR_UPDATE | EVENT_POWER_UPDATE | EVENT_SHIFT_REG_UPDATE |
             EVENT_START_REQUESTED | EVENT_STOP_REQUESTED,
@@ -1446,7 +1451,7 @@ void StateMachineTask(void *pvParameters) {
                     }
                     break;
                 case WEB_CMD_STOP:
-                    flog_last_stop_req_ms = millis();
+                    flog_last_stop_req_ms = uptime_ms();
                     if (!is_not_working()) {
                         FramLogRecord r = {};
                         r.type = FLOG_EV_STOP_REQUEST;
@@ -1482,8 +1487,8 @@ void StateMachineTask(void *pvParameters) {
                             IS_REG_OFF(REG_FUEL_PUMP) &&
                             fuel_level_from_adc(adc_2_0.get()) >= g_engine_config.fuel_pump_stop_level) {
                             SDEBUG("[FUEL] FUEL_PUMP toggle blocked — fuel level ",
-                                   String((double)fuel_level_from_adc(adc_2_0.get()), 1),
-                                   " >= ", String((double)g_engine_config.fuel_pump_stop_level, 1));
+                                   dbg_fixed((double)fuel_level_from_adc(adc_2_0.get()), 1),
+                                   " >= ", dbg_fixed((double)g_engine_config.fuel_pump_stop_level, 1));
                             break;
                         }
                         sendOutputCommand(CMD_REG_TOGGLE, web_cmd.reg, false);
@@ -1512,8 +1517,8 @@ void StateMachineTask(void *pvParameters) {
                         if (web_cmd.reg == REG_FUEL_PUMP && web_cmd.state &&
                             fuel_level_from_adc(adc_2_0.get()) >= g_engine_config.fuel_pump_stop_level) {
                             SDEBUG("[FUEL] FUEL_PUMP set=ON blocked — fuel level ",
-                                   String((double)fuel_level_from_adc(adc_2_0.get()), 1),
-                                   " >= ", String((double)g_engine_config.fuel_pump_stop_level, 1));
+                                   dbg_fixed((double)fuel_level_from_adc(adc_2_0.get()), 1),
+                                   " >= ", dbg_fixed((double)g_engine_config.fuel_pump_stop_level, 1));
                             break;
                         }
                         sendOutputCommand(CMD_REG_SET, web_cmd.reg, web_cmd.state);
@@ -1531,8 +1536,8 @@ void StateMachineTask(void *pvParameters) {
         if (IS_REG_ON(REG_FUEL_PUMP) &&
             fuel_level_from_adc(adc_2_0.get()) >= g_engine_config.fuel_pump_stop_level) {
             SDEBUG("[FUEL] FUEL_PUMP auto-OFF — fuel level ",
-                   String((double)fuel_level_from_adc(adc_2_0.get()), 1),
-                   " >= ", String((double)g_engine_config.fuel_pump_stop_level, 1));
+                   dbg_fixed((double)fuel_level_from_adc(adc_2_0.get()), 1),
+                   " >= ", dbg_fixed((double)g_engine_config.fuel_pump_stop_level, 1));
             sendOutputCommand(CMD_REG_OFF, REG_FUEL_PUMP, false);
         }
 
@@ -1542,19 +1547,19 @@ void StateMachineTask(void *pvParameters) {
         // supply empty, hose off, etc.) that would otherwise never trip the
         // fuel_pump_stop_level check above, since the tank never actually fills.
         // 0 = disabled (same convention as g_limits_config's temp/power limits
-        // above) — otherwise millis()-fuel_pump_last_rise_ms >= 0 is trivially
+        // above) — otherwise uptime_ms()-fuel_pump_last_rise_ms >= 0 is trivially
         // true on the very next iteration, tripping instantly instead of never.
         if (IS_REG_ON(REG_FUEL_PUMP) && g_engine_config.fuel_pump_no_rise_timeout_s > 0) {
             float level = (float)fuel_level_from_adc(adc_2_0.get());
             if (fuel_pump_last_rise_ms == 0 ||
                 level >= fuel_pump_last_rise_level + FUEL_PUMP_RISE_HYSTERESIS_L) {
-                fuel_pump_last_rise_ms = millis();
+                fuel_pump_last_rise_ms = uptime_ms();
                 fuel_pump_last_rise_level = level;
-            } else if (millis() - fuel_pump_last_rise_ms >=
+            } else if (uptime_ms() - fuel_pump_last_rise_ms >=
                        g_engine_config.fuel_pump_no_rise_timeout_s * 1000UL) {
                 SDEBUG("[FUEL] FUEL_PUMP auto-OFF — no level rise for ",
-                       String(g_engine_config.fuel_pump_no_rise_timeout_s),
-                       "s (stuck at ", String((double)level, 1), "L)");
+                       (g_engine_config.fuel_pump_no_rise_timeout_s),
+                       "s (stuck at ", dbg_fixed((double)level, 1), "L)");
                 sendOutputCommand(CMD_REG_OFF, REG_FUEL_PUMP, false);
                 FramLogRecord r = {};
                 r.type = FLOG_EV_ERROR;

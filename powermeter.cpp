@@ -14,6 +14,7 @@
 #include "mcp39f511a_dev.h"
 #include "debug.h"
 #include <esp_task_wdt.h>
+#include "uptime.h"
 
 // Boot-time snapshot of the device's config registers — read once in
 // mcp39f511a_read_config()/mcp39f511a_load_config_from_flash(), only ever
@@ -65,7 +66,7 @@ void PowerMeterTask(void *pvParameters) {
 
     for (;;) {
         memset(&power_data, 0, sizeof(power_data));
-        power_data.timestamp = millis();
+        power_data.timestamp = uptime_ms();
 
         // Carry forward the last energy reading — refreshed below on its
         // own, slower period.
@@ -90,8 +91,8 @@ void PowerMeterTask(void *pvParameters) {
                 power_data.valid = libData->valid;
             }
 
-            if (millis() - s_energyReadTime >= MCP39F511A_ENERGY_READ_PERIOD_MS) {
-                s_energyReadTime = millis();
+            if (uptime_ms() - s_energyReadTime >= MCP39F511A_ENERGY_READ_PERIOD_MS) {
+                s_energyReadTime = uptime_ms();
                 if (mcp39f511a.readEnergyCounters()) {
                     Mcp39f511aEnergyCounters *e = mcp39f511a.getEnergyCounters();
                     s_last_import_active_mwh = e->importActiveEnergy;

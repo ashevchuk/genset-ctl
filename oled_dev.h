@@ -13,8 +13,8 @@
 #ifndef OLED_DEV_H
 #define OLED_DEV_H
 
-#include <Arduino.h>
-#include <Wire.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <SSD1306Ascii.h>
 
 class OledDev : public SSD1306Ascii {
@@ -38,8 +38,14 @@ protected:
     void writeDisplay(uint8_t b, uint8_t mode) override;
 
 private:
+    static constexpr uint8_t kBatchMax = 16;  // flush once more than this many RAM bytes are pending
+
+    bool flushBatch(void);
+
     uint8_t addr_ = 0;
     uint8_t nBuffered_ = 0;  // pending bytes in the current batched transaction
+    uint8_t len_ = 0;        // bytes in buf_, including the leading control byte
+    uint8_t buf_[1 + kBatchMax + 1];
     bool lastOk_ = true;
 };
 

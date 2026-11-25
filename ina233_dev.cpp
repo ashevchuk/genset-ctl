@@ -1,5 +1,5 @@
 #include "ina233_dev.h"
-#include <Wire.h>
+#include "i2c_bus.h"
 
 #define INA233_READ_VIN 0x88  // PMBus command, direct format, 1.25 mV/LSB
 
@@ -9,22 +9,15 @@
 #define INA233_VBUS_OFFSET_V 0.096f
 
 bool Ina233Dev::begin(void) {
-    Wire.beginTransmission(addr_);
-    return Wire.endTransmission() == 0;
+    return i2c_bus_probe(addr_);
 }
 
 bool Ina233Dev::readWord(uint8_t reg, uint16_t &val) {
-    Wire.beginTransmission(addr_);
-    Wire.write(reg);
-    // Plain STOP, not repeated start — see ads1115_dev.cpp's readRegister()
-    // for why: Wire.setTimeOut() doesn't bound endTransmission(false).
-    if (Wire.endTransmission() != 0) return false;
-    if (Wire.requestFrom((int)addr_, 2) != 2) return false;
-    if (!Wire.available()) return false;
-    uint8_t lo = Wire.read();  // PMBus word reads are LSB first
-    if (!Wire.available()) return false;
-    uint8_t hi = Wire.read();
-    val = ((uint16_t)hi << 8) | lo;
+    // Plain STOP, not repeated start — see ads1115_dev.cpp's readRegister().
+    if (!i2c_bus_write(addr_, &reg, 1)) return false;
+    uint8_t buf[2];
+    if (!i2c_bus_read(addr_, buf, sizeof(buf))) return false;
+    val = ((uint16_t)buf[1] << 8) | buf[0];  // PMBus word reads are LSB first
     return true;
 }
 

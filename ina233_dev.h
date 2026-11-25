@@ -1,5 +1,5 @@
 /*
- * ina233_dev.h — minimal INA233 driver, direct Wire access.
+ * ina233_dev.h — minimal INA233 driver, direct I2C access (i2c_bus.h).
  *
  * Replaces the INA233 library with a thin driver exposing only what this
  * project uses: bus voltage (PMBus READ_VIN, direct-format 1.25 mV/LSB).
@@ -18,7 +18,8 @@
 #ifndef INA233_DEV_H
 #define INA233_DEV_H
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 
 class Ina233Dev {
 public:

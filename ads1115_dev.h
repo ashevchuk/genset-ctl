@@ -1,5 +1,5 @@
 /*
- * ads1115_dev.h — minimal ADS1115 driver, direct Wire access.
+ * ads1115_dev.h — minimal ADS1115 driver, direct I2C access (i2c_bus.h).
  *
  * Replaces ADS1115_WE with a thin driver fixed at the one configuration
  * this project actually uses on both chips: +/-4096 mV range, 250 SPS,
@@ -14,7 +14,8 @@
 #ifndef ADS1115_DEV_H
 #define ADS1115_DEV_H
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 
 enum ADS1115_MUX : uint16_t {
     ADS1115_COMP_0_GND = 0x4000,
@@ -33,7 +34,7 @@ public:
 
     // Switches the active input channel. In continuous mode the device
     // needs two conversions at the new channel before a read is valid —
-    // same as the original library, a real blocking delay() (~8ms at our
+    // same as the original library, a real blocking vTaskDelay() (~8ms at our
     // fixed 250 SPS), not an I2C wait.
     bool setCompareChannels(ADS1115_MUX mux);
 

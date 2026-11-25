@@ -1,5 +1,6 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 
 // LAN UDP discovery: lets a display panel find this controller's IP on the
 // local network without the operator typing it in. Independent of ESP-NOW

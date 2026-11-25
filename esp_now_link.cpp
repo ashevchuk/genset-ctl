@@ -12,11 +12,12 @@
 #include "debug.h"
 #include "smoothed_safe.h"
 #include "statemachine.h"
-#include <WiFi.h>
-#include <Preferences.h>
+#include "wifi_net.h"
+#include <nvs.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <esp_task_wdt.h>
+#include "uptime.h"
 
 extern SmoothedSafe<double> adc_1_0;
 extern SmoothedSafe<double> adc_1_1;
@@ -26,7 +27,7 @@ extern SmoothedSafe<double> adc_2_0;
 extern SmoothedSafe<double> adc_2_1;
 extern SmoothedSafe<double> adc_2_2;
 double fuel_level_from_adc(double adc_value);
-extern String wifiHostname;
+extern char wifiHostname[33];
 
 EspNowConfig_t g_espnow_config = {
     .enabled = false,
@@ -175,7 +176,7 @@ static void peer_touch(const uint8_t mac[6]) {
     int free_slot = -1, oldest = 0;
     for (int i = 0; i < ESPNOW_MAX_DISPLAYS; i++) {
         if (s_peers[i].used && memcmp(s_peers[i].mac, mac, 6) == 0) {
-            s_peers[i].last_hello_ms = millis();
+            s_peers[i].last_hello_ms = uptime_ms();
             return;
         }
         if (!s_peers[i].used && free_slot < 0) free_slot = i;
@@ -190,14 +191,14 @@ static void peer_touch(const uint8_t mac[6]) {
     if (!add_encrypted_peer(mac)) return;
     s_peers[slot].used = true;
     memcpy(s_peers[slot].mac, mac, 6);
-    s_peers[slot].last_hello_ms = millis();
+    s_peers[slot].last_hello_ms = uptime_ms();
     SLOG_PRINTF("ESP-NOW: display %02x:%02x:%02x:%02x:%02x:%02x joined\n",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
 static void peers_expire(void) {
     for (int i = 0; i < ESPNOW_MAX_DISPLAYS; i++) {
-        if (s_peers[i].used && millis() - s_peers[i].last_hello_ms > ESPNOW_PEER_TIMEOUT_MS) {
+        if (s_peers[i].used && uptime_ms() - s_peers[i].last_hello_ms > ESPNOW_PEER_TIMEOUT_MS) {
             esp_now_del_peer(s_peers[i].mac);
             s_peers[i].used = false;
             SLOG_PRINTLN("ESP-NOW: display peer timed out");
@@ -277,11 +278,14 @@ static uint32_t s_last_probe_ms = 0;
 // reads (rtos_config.h, xFlashI2CGuard), so take the same guard.
 static void home_load(void) {
     bool held = xSemaphoreTake(xFlashI2CGuard, pdMS_TO_TICKS(600)) == pdTRUE;
-    Preferences prefs;
-    if (prefs.begin("espnow", true)) {
-        s_home_channel = prefs.getUChar("ch", 0);
-        prefs.getString("ssid", s_home_ssid, sizeof(s_home_ssid));
-        prefs.end();
+    nvs_handle_t nvs;
+    if (nvs_open("espnow", NVS_READONLY, &nvs) == ESP_OK) {
+        uint8_t ch = 0;
+        nvs_get_u8(nvs, "ch", &ch);  // a missing key leaves the default
+        s_home_channel = ch;
+        size_t len = sizeof(s_home_ssid);
+        if (nvs_get_str(nvs, "ssid", s_home_ssid, &len) != ESP_OK) s_home_ssid[0] = '\0';
+        nvs_close(nvs);
     }
     if (held) xSemaphoreGive(xFlashI2CGuard);
     s_home_loaded = true;
@@ -292,12 +296,15 @@ static void home_save(uint8_t ch, const char *ssid) {
     s_home_channel = ch;
     strlcpy(s_home_ssid, ssid, sizeof(s_home_ssid));
     bool held = xSemaphoreTake(xFlashI2CGuard, pdMS_TO_TICKS(600)) == pdTRUE;
-    Preferences prefs;
-    if (prefs.begin("espnow", false)) {
-        prefs.putUChar("ch", ch);
-        prefs.putString("ssid", s_home_ssid);
-        prefs.end();
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("espnow", NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "ch", ch);
+        if (err == ESP_OK) err = nvs_set_str(nvs, "ssid", s_home_ssid);
+        if (err == ESP_OK) err = nvs_commit(nvs);
+        nvs_close(nvs);
     }
+    if (err != ESP_OK) SLOG_PRINTF("ESP-NOW: home channel save failed: %s\n", esp_err_to_name(err));
     if (held) xSemaphoreGive(xFlashI2CGuard);
     SLOG_PRINTF("ESP-NOW: home channel saved: %u, ssid \"%s\"\n", ch, s_home_ssid);
 }
@@ -307,41 +314,43 @@ bool espnow_wifi_supervise(bool connected, bool reconnect_idle) {
     if (!s_home_loaded) home_load();
 
     if (connected) {
-        uint8_t ch = (uint8_t)WiFi.channel();
-        String ssid = WiFi.SSID();
-        // WiFi.SSID() is already empty in the loop pass that sees the drop.
-        if (ch != 0 && ssid.length() > 0 &&
-            (ch != s_home_channel || strcmp(ssid.c_str(), s_home_ssid) != 0))
-            home_save(ch, ssid.c_str());
+        uint8_t ch = wifi_net_channel();
+        char ssid[33];
+        // The associated SSID is already empty in the loop pass that sees the drop.
+        wifi_net_ssid(ssid, sizeof(ssid));
+        if (ch != 0 && ssid[0] != '\0' &&
+            (ch != s_home_channel || strcmp(ssid, s_home_ssid) != 0))
+            home_save(ch, ssid);
         return false;
     }
     if (s_home_channel == 0 || s_home_ssid[0] == '\0') return false;
 
     if (s_probe_running) {
-        int16_t n = WiFi.scanComplete();
-        if (n == WIFI_SCAN_RUNNING) return false;
+        int n = wifi_net_scan_result();
+        if (n == WIFI_NET_SCAN_RUNNING) return false;
         s_probe_running = false;
         bool seen = false;
-        for (int16_t i = 0; i < n; i++) {
-            if (WiFi.SSID(i) == s_home_ssid) seen = true;
+        char found[33];
+        for (int i = 0; i < n; i++) {
+            if (wifi_net_scan_ssid(i, found, sizeof(found)) && strcmp(found, s_home_ssid) == 0) seen = true;
         }
-        WiFi.scanDelete();
+        wifi_net_scan_clear();
         if (seen) {
             SLOG_PRINTF("ESP-NOW: \"%s\" back on channel %u — reconnecting\n", s_home_ssid, s_home_channel);
             return true;
         }
     }
 
-    if (!reconnect_idle || WiFi.scanComplete() == WIFI_SCAN_RUNNING) return false;
+    if (!reconnect_idle || wifi_net_scan_result() == WIFI_NET_SCAN_RUNNING) return false;
 
     uint8_t primary = 0;
     wifi_second_chan_t second;
     if (esp_wifi_get_channel(&primary, &second) == ESP_OK && primary != s_home_channel)
         esp_wifi_set_channel(s_home_channel, WIFI_SECOND_CHAN_NONE);
 
-    if (millis() - s_last_probe_ms >= ESPNOW_PROBE_INTERVAL_MS) {
-        s_last_probe_ms = millis();
-        if (WiFi.scanNetworks(true, false, false, ESPNOW_PROBE_MS_PER_CHAN, s_home_channel) == WIFI_SCAN_RUNNING)
+    if (uptime_ms() - s_last_probe_ms >= ESPNOW_PROBE_INTERVAL_MS) {
+        s_last_probe_ms = uptime_ms();
+        if (wifi_net_scan_start(s_home_channel, ESPNOW_PROBE_MS_PER_CHAN, false))
             s_probe_running = true;
     }
     return false;
@@ -400,7 +409,7 @@ static void fill_state(EspNowStatePkt &pkt) {
     pkt.vrms          = power.rms_voltage;
     pkt.irms          = power.rms_current;
     pkt.active_power_w = power.active_power;
-    pkt.sta_ip        = (WiFi.status() == WL_CONNECTED) ? (uint32_t)WiFi.localIP() : 0;
+    pkt.sta_ip        = wifi_net_sta_ip();
 }
 
 void EspNowTask(void *pvParameters) {
@@ -416,7 +425,9 @@ void EspNowTask(void *pvParameters) {
     // peers use channel 0 = whatever the interface is on (see
     // espnow_wifi_supervise() for keeping that channel stable).
     esp_wifi_get_mac(WIFI_IF_STA, s_own_mac);
-    SLOG_PRINTF("ESP-NOW: own MAC=%s, name=\"%s\"\n", WiFi.macAddress().c_str(), wifiHostname.c_str());
+    char mac_str[18];
+    wifi_net_sta_mac_str(mac_str, sizeof(mac_str));
+    SLOG_PRINTF("ESP-NOW: own MAC=%s, name=\"%s\"\n", mac_str, wifiHostname);
 
     s_hello_q = xQueueCreate(8, 6);
     esp_err_t err = esp_now_init();
@@ -439,7 +450,7 @@ void EspNowTask(void *pvParameters) {
     EspNowBeaconPkt beacon = {};
     beacon.magic         = ESPNOW_MAGIC_BEACON;
     beacon.proto_version = ESPNOW_PROTO_VERSION;
-    strncpy(beacon.name, wifiHostname.c_str(), sizeof(beacon.name));
+    strncpy(beacon.name, wifiHostname, sizeof(beacon.name));
 
     uint32_t last_beacon_ms = 0, last_state_ms = 0;
 
@@ -447,7 +458,7 @@ void EspNowTask(void *pvParameters) {
         uint8_t mac[6];
         while (xQueueReceive(s_hello_q, mac, 0) == pdTRUE) peer_touch(mac);
 
-        uint32_t now = millis();
+        uint32_t now = uptime_ms();
         if (now - last_beacon_ms >= ESPNOW_BEACON_MS) {
             last_beacon_ms = now;
             esp_now_send(BROADCAST_MAC, (const uint8_t *)&beacon, sizeof(beacon));

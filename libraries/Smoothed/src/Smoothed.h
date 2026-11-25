@@ -7,6 +7,9 @@
 
 #pragma once
 
+// Local change (genset-ctl): uint8_t instead of Arduino's byte, no Arduino core.
+#include <stdint.h>
+
 #define SMOOTHED_AVERAGE 1
 #define SMOOTHED_EXPONENTIAL 2
 
@@ -14,7 +17,7 @@
 template <typename T>
 class Smoothed {
   private:
-    byte smoothMode;
+    uint8_t smoothMode;
     uint16_t smoothReadingsFactor = 10; // The smoothing factor. In average mode, this is the number of readings to average. 
     uint16_t smoothReadingsPosition = 0; // Current position in the array
     uint16_t smoothReadingsNum = 0; // Number of readings currently being averaged
@@ -22,7 +25,7 @@ class Smoothed {
   public:
     Smoothed();
     ~Smoothed(); // Destructor to clean up when class instance killed
-    bool begin (byte smoothMode, uint16_t smoothFactor = 10);
+    bool begin (uint8_t smoothMode, uint16_t smoothFactor = 10);
     bool add (T newReading);
     T get ();
     T getLast ();
@@ -43,7 +46,7 @@ Smoothed<T>::~Smoothed () { // Destructor
 
 // Inintialise the array for storing sensor values
 template <typename T>
-bool Smoothed<T>::begin (byte mode, uint16_t smoothFactor) { 
+bool Smoothed<T>::begin (uint8_t mode, uint16_t smoothFactor) { 
   smoothMode = mode;
   smoothReadingsFactor = smoothFactor; 
   

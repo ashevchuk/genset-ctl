@@ -1,6 +1,7 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <ArduinoJson.h>
 
 // ESP-NOW fallback link to the display panel(s) (display/), protocol v2.
@@ -28,14 +29,14 @@ void espnow_config_load(const JsonDocument &doc);
 
 // Keeps ESP-NOW reachable while the STA has no AP (ESPNOW.md "Channel
 // handling"). Call every loop() pass in STA mode. `connected`: STA has an
-// IP; `reconnect_idle`: nothing else (AsyncWiFiMulti, OLED menu scan) is
+// IP; `reconnect_idle`: nothing else (the multi-network connect, OLED menu scan) is
 // using the radio. Returns true when the home channel shows our SSID again
 // and the caller should start a full reconnect right away. No-op (false)
 // when ESP-NOW is disabled.
 bool espnow_wifi_supervise(bool connected, bool reconnect_idle);
 
 // True while espnow_wifi_supervise()'s own single-channel scan is in flight —
-// the caller must not start another scan (AsyncWiFiMulti) until it ends.
+// the caller must not start another scan (wifi_net_multi_start()) until it ends.
 bool espnow_wifi_probe_running(void);
 
 // Channel of the last AP association (0 = unknown or ESP-NOW disabled).

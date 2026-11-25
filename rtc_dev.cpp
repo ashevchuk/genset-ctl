@@ -1,5 +1,5 @@
 #include "rtc_dev.h"
-#include <Wire.h>
+#include "i2c_bus.h"
 
 #define DS3231_ADDR        0x68
 #define DS3231_REG_TIME    0x00
@@ -15,40 +15,25 @@ static inline uint8_t bin2bcd(uint8_t v) { return v + 6 * (v / 10); }
 static inline uint8_t dowToDs3231(uint8_t d) { return d == 0 ? 7 : d; }
 
 bool RtcDs3231::begin(void) {
-    Wire.beginTransmission(DS3231_ADDR);
-    return Wire.endTransmission() == 0;
+    return i2c_bus_probe(DS3231_ADDR);
 }
 
 bool RtcDs3231::readRegister(uint8_t reg, uint8_t &val) {
-    Wire.beginTransmission(DS3231_ADDR);
-    Wire.write(reg);
-    // Plain STOP, not repeated start — see ads1115_dev.cpp's readRegister()
-    // for why: Wire.setTimeOut() doesn't bound endTransmission(false).
-    if (Wire.endTransmission() != 0) return false;
-    if (Wire.requestFrom((int)DS3231_ADDR, 1) != 1) return false;
-    if (!Wire.available()) return false;
-    val = Wire.read();
-    return true;
+    // Plain STOP, not repeated start — see ads1115_dev.cpp's readRegister().
+    if (!i2c_bus_write(DS3231_ADDR, &reg, 1)) return false;
+    return i2c_bus_read(DS3231_ADDR, &val, 1);
 }
 
 bool RtcDs3231::writeRegister(uint8_t reg, uint8_t val) {
-    Wire.beginTransmission(DS3231_ADDR);
-    Wire.write(reg);
-    Wire.write(val);
-    return Wire.endTransmission() == 0;
+    uint8_t buf[2] = {reg, val};
+    return i2c_bus_write(DS3231_ADDR, buf, sizeof(buf));
 }
 
 bool RtcDs3231::now(DateTime &out) {
-    Wire.beginTransmission(DS3231_ADDR);
-    Wire.write(DS3231_REG_TIME);
-    if (Wire.endTransmission() != 0) return false;  // plain STOP — see readRegister()
-    if (Wire.requestFrom((int)DS3231_ADDR, 7) != 7) return false;
-
+    uint8_t reg = DS3231_REG_TIME;
+    if (!i2c_bus_write(DS3231_ADDR, &reg, 1)) return false;  // plain STOP — see readRegister()
     uint8_t buf[7];
-    for (uint8_t i = 0; i < 7; i++) {
-        if (!Wire.available()) return false;
-        buf[i] = Wire.read();
-    }
+    if (!i2c_bus_read(DS3231_ADDR, buf, sizeof(buf))) return false;
 
     // buf: sec, min, hour, day-of-week, date, month(+century bit), year
     out = DateTime(bcd2bin(buf[6]) + 2000U, bcd2bin(buf[5] & 0x7F),
@@ -58,16 +43,17 @@ bool RtcDs3231::now(DateTime &out) {
 }
 
 bool RtcDs3231::adjust(const DateTime &dt) {
-    Wire.beginTransmission(DS3231_ADDR);
-    Wire.write(DS3231_REG_TIME);
-    Wire.write(bin2bcd(dt.second()));
-    Wire.write(bin2bcd(dt.minute()));
-    Wire.write(bin2bcd(dt.hour()));
-    Wire.write(bin2bcd(dowToDs3231(dt.dayOfTheWeek())));
-    Wire.write(bin2bcd(dt.day()));
-    Wire.write(bin2bcd(dt.month()));
-    Wire.write(bin2bcd(dt.year() - 2000U));
-    if (Wire.endTransmission() != 0) return false;
+    uint8_t buf[8] = {
+        DS3231_REG_TIME,
+        bin2bcd(dt.second()),
+        bin2bcd(dt.minute()),
+        bin2bcd(dt.hour()),
+        bin2bcd(dowToDs3231(dt.dayOfTheWeek())),
+        bin2bcd(dt.day()),
+        bin2bcd(dt.month()),
+        bin2bcd(dt.year() - 2000U),
+    };
+    if (!i2c_bus_write(DS3231_ADDR, buf, sizeof(buf))) return false;
 
     uint8_t status;
     if (!readRegister(DS3231_REG_STATUS, status)) return false;
@@ -82,14 +68,12 @@ bool RtcDs3231::lostPower(bool &out) {
 }
 
 bool RtcDs3231::getTemperature(float &out) {
-    Wire.beginTransmission(DS3231_ADDR);
-    Wire.write(DS3231_REG_TEMP);
-    if (Wire.endTransmission() != 0) return false;  // plain STOP — see readRegister()
-    if (Wire.requestFrom((int)DS3231_ADDR, 2) != 2) return false;
-    if (!Wire.available()) return false;
-    int8_t msb = (int8_t)Wire.read();
-    if (!Wire.available()) return false;
-    uint8_t lsb = Wire.read();
+    uint8_t reg = DS3231_REG_TEMP;
+    if (!i2c_bus_write(DS3231_ADDR, &reg, 1)) return false;  // plain STOP — see readRegister()
+    uint8_t buf[2];
+    if (!i2c_bus_read(DS3231_ADDR, buf, sizeof(buf))) return false;
+    int8_t msb = (int8_t)buf[0];
+    uint8_t lsb = buf[1];
     out = (float)msb + (lsb >> 6) * 0.25f;
     return true;
 }

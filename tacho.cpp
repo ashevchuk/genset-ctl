@@ -13,7 +13,8 @@
  */
 
 #include "tacho.h"
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include "driver/pulse_cnt.h"
 #include "esp_timer.h"
 

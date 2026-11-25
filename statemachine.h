@@ -1,6 +1,7 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include "rtos_config.h"
 
 // Generator state machine (StateMachineTask, switch_STATE_*/process_STATE_*)
@@ -46,10 +47,7 @@ void flog_charge_started(bool auto_started);
 void flog_charge_stopped(uint8_t reason);
 
 // True if any hardware protection input or configured software temperature
-// limit currently forbids starting/running. Also called directly from the
-// main .cpp's start_working()/start_retry_working() (the WebTask/onWsServerEvent
-// pre-RTOS fallback path), which is why this stays a real exported function
-// rather than folding into StateMachineTask's own body.
+// limit currently forbids starting/running.
 bool safety_start_inhibited(void);
 
 // Cached head-temp reads (g_state.sensors, refreshed by I2CTask — no direct
@@ -69,11 +67,8 @@ void StateMachineTask(void *pvParameters);
 // Raw state-transition machinery. runtimeState/prevState are non-static
 // (extern here) and the STATE()/IS_CURRENT_STATE() macros are exported —
 // not because anything outside this module should be driving the state
-// machine directly, but because the main .cpp's is_not_working() and its
-// start_working()/start_retry_working()/stop_working() wrappers (called
-// from web.cpp/onWsServerEvent's pre-RTOS fallback path) need to read the
-// current state and request STATE_STARTING_SINGLE/STATE_STOPPING_LOAD_OFF
-// the same way the state machine's own handlers do. Everything else in
+// machine directly, but because the main .cpp's is_not_working() needs to
+// read the current state the same way the state machine's own handlers do. Everything else in
 // this file (the switch_STATE_*/process_STATE_* handlers, switch_state()'s
 // own definition) is genuinely private to statemachine.cpp.
 // ----------------------------------------------------------------------------
@@ -82,9 +77,8 @@ extern state prevState;
 
 bool switch_state(const state new_state, const bool update_old);
 
-// Genuinely public: web.cpp's WEB_CMD_REG_SET/_TOGGLE handlers and
-// oled_menu.cpp's RTOS_REG_ON (shared_defines.h) both post register
-// commands from outside this module via these — both just
+// Genuinely public: oled_menu.cpp's RTOS_REG_ON (shared_defines.h) posts
+// register commands from outside this module via these — they just
 // xQueueSend(xOutputCommandQueue, ...), safe to call from any task. Was
 // missing from this header until 2026-09-25 (see shared_defines.h): the
 // only reason oled_menu.cpp used to carry its own hand-written forward
@@ -92,9 +86,9 @@ bool switch_state(const state new_state, const bool update_old);
 void sendOutputCommand(OutputCommandType_t type, uint8_t reg, bool state);
 void sendSyncCommand(uint16_t full_state);
 
-// Still defined (non-static) in the main .cpp: is_not_working() is called
-// from web.cpp's pre-RTOS fallback path (start_working()/etc.), so it can't
-// move here; is_running()/is_stopped() are its siblings, kept alongside it.
+// Still defined (non-static) in the main .cpp: is_not_working() and its
+// siblings is_running()/is_stopped() are also used by report.cpp,
+// esp_now_link.cpp and mqtt.cpp.
 // readBatPeriod is likewise a main .cpp global (see its own comment there —
 // duplicating its initializer here would be a cross-TU static-init-order
 // hazard), just read/written by the state machine handlers in this file.

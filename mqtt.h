@@ -1,6 +1,7 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <ArduinoJson.h>
 
 // MQTT publish/subscribe. Extracted 2026-09-24 from esp32-gen-ctl-ai-rtos.cpp

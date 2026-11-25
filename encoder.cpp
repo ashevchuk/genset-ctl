@@ -17,9 +17,12 @@
  */
 
 #include "encoder.h"
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include "driver/pulse_cnt.h"
 #include "esp_timer.h"
+#include "driver/gpio.h"
+#include "esp_attr.h"
 
 static pcnt_unit_handle_t s_pcnt_unit    = NULL;
 static int32_t            s_last_position = 0;
@@ -31,9 +34,10 @@ static volatile uint32_t s_btn_press_ms = 0;
 // ---------------------------------------------------------------------------
 // Button ISR — minimal: no Serial, no mutex, no blocking calls
 // ---------------------------------------------------------------------------
-static void IRAM_ATTR encoder_btn_isr() {
+static void IRAM_ATTR encoder_btn_isr(void *arg) {
+    (void)arg;
     uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-    if (!digitalRead(ENCODER_PIN_BTN)) {
+    if (!gpio_get_level((gpio_num_t)ENCODER_PIN_BTN)) {
         // Falling edge: button pressed (active LOW)
         s_btn_press_ms = now_ms;
     } else {
@@ -124,8 +128,18 @@ void encoder_setup() {
     ESP_ERROR_CHECK(pcnt_unit_start(s_pcnt_unit));
     s_last_position = 0;
 
-    // Button: CHANGE interrupt, minimal ISR only sets a flag
-    attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_BTN), encoder_btn_isr, CHANGE);
+    // Button: any-edge interrupt, minimal ISR only sets a flag
+    gpio_config_t btn_cfg = {};
+    btn_cfg.pin_bit_mask = 1ULL << ENCODER_PIN_BTN;
+    btn_cfg.mode         = GPIO_MODE_INPUT;
+    btn_cfg.pull_up_en   = GPIO_PULLUP_DISABLE;
+    btn_cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    btn_cfg.intr_type    = GPIO_INTR_ANYEDGE;
+    ESP_ERROR_CHECK(gpio_config(&btn_cfg));
+    // The ISR service is shared; it may already be installed by other code.
+    esp_err_t err = gpio_install_isr_service(0);
+    if (err != ESP_ERR_INVALID_STATE) ESP_ERROR_CHECK(err);
+    ESP_ERROR_CHECK(gpio_isr_handler_add((gpio_num_t)ENCODER_PIN_BTN, encoder_btn_isr, NULL));
 }
 
 int32_t encoder_get_position() {

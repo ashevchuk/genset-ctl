@@ -1,24 +1,16 @@
 #include "update_mode.h"
+#include <esp_system.h>
 
-#include <WiFi.h>
-#include <ESPmDNS.h>
-#include <FFat.h>
-#include <Update.h>
-#include <ArduinoJson.h>
+#include "wifi_net.h"
+#include <mdns.h>
+#include "ffat.h"
 
 #include "rtos_config.h"
 #include "shiftreg.h"
 #include "oled_dev.h"
-#include "web.h"
+#include "http_server.h"
 #include "config.h"
 #include "debug.h"
-
-extern WebServer webServer;
-
-// Still defined (non-static) in the main .cpp — update_mode()'s own
-// reduced /api/wifi/save route reuses it rather than duplicating the save
-// logic.
-bool wifi_config_save(const JsonDocument &doc);
 
 // Fallback AP credentials this recovery mode connects to — used nowhere
 // else, so no reason for these to be visible outside this file.
@@ -32,125 +24,61 @@ void update_mode(void) {
 
   oled.println("Update mode");
 
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.begin(wifi_fb_ssid, wifi_fb_password);
+  wifi_net_start_sta();
+  wifi_net_connect(wifi_fb_ssid, wifi_fb_password);
 
   oled.print("Connecting: ");
   oled.println(wifi_fb_ssid);
 
   for (uint8_t i = 0; i < 5; i++) {
-    if (WiFi.waitForConnectResult(60000) == WL_CONNECTED) {
+    if (wifi_net_wait_connected(60000)) {
       break;
     }
 
-    delay(100);
+    vTaskDelay(pdMS_TO_TICKS(100));
     SLOG_PRINT(".");
     oled.print(".");
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!wifi_net_connected()) {
     SLOG_PRINTLN("WiFi Failed");
     oled.clear();
     oled.println("fail");
     REG_ON(REG_BUZZER);
-    delay(10);
+    vTaskDelay(pdMS_TO_TICKS(10));
     REG_OFF(REG_BUZZER);
     REG_OFF(REG_LED0);
-    ESP.restart();
+    esp_restart();
   } else {
 
-    WiFi.setAutoReconnect(true);
+    wifi_net_set_auto_reconnect(true);
 
     oled.println("");
 
-    //  if (WiFi.waitForConnectResult() == WL_CONNECTED) {
     oled.println("Connected");
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     oled.clear();
 
     oled.println("Update mode...");
   }
 
-  MDNS.begin(wifi_fb_host);
+  // Already initialised if the got-IP hook started it; only the name matters.
+  mdns_init();
+  mdns_hostname_set(wifi_fb_host);
 
   // Mount FFat so wifi-config can read/write wifi.json
-  if (!FFat.begin(true)) {
+  if (!ffat_mount()) {
     SLOG_PRINTLN("[update_mode] FFat mount failed — wifi-config save unavailable");
   }
 
-  webServer.on("/reset", http_method::HTTP_GET, []() {
-    webServer.send(200, "text/plain", "OK");
-    ESP.restart();
-  });
+  if (!http_server_start_update_mode()) {
+    SLOG_PRINTLN("[update_mode] http_server start failed");
+  }
+  mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
 
-  webServer.on("/wifi-config", http_method::HTTP_GET, []() {
-    serve_static_ws(webServer, "/wifi-config.html");
-  });
-
-  webServer.on("/api/wifi/save", http_method::HTTP_POST, []() {
-    JsonDocument doc;
-    parse_wifi_core_fields(doc);
-    if (!wifi_config_save(doc)) {
-      webServer.send(500, "text/plain", "Save failed");
-      return;
-    }
-    webServer.send(200, "text/plain", "OK. Rebooting...");
-    vTaskDelay(pdMS_TO_TICKS(500));
-    ESP.restart();
-  });
-
-  webServer.on(
-      "/update", http_method::HTTP_POST,
-      []() {
-        webServer.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
-        REG_ON(REG_BUZZER);
-        delay(100);
-        REG_OFF(REG_BUZZER);
-        delay(50);
-        REG_ON(REG_BUZZER);
-        delay(100);
-        REG_OFF(REG_BUZZER);
-        oled.println("Updated");
-        ESP.restart();
-      },
-      []() {
-        HTTPUpload &upload = webServer.upload();
-        if (upload.status == UPLOAD_FILE_START) {
-          Serial.setDebugOutput(true);
-          SLOG_PRINTF("Update: %s\n", upload.filename.c_str());
-          if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-            Update.printError(Serial);
-          }
-        } else if (upload.status == UPLOAD_FILE_WRITE) {
-          if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-            Update.printError(Serial);
-          }
-          // No RTOS/TWDT in this code path (update_mode() runs before
-          // setup_rtos()), so no watchdog-starvation risk here — unlike the
-          // main-operation /update route, this loop just needs to keep
-          // spinning (see the for(;;) below), which handleClient() being
-          // slow doesn't threaten.
-        } else if (upload.status == UPLOAD_FILE_END) {
-          if (Update.end(true)) {
-            SLOG_PRINTF("Update Success: %u\nRebooting...\n", (unsigned)upload.totalSize);
-          } else {
-            Update.printError(Serial);
-          }
-          Serial.setDebugOutput(false);
-        } else if (upload.status == UPLOAD_FILE_ABORTED) {
-          Update.end(false);
-          Serial.setDebugOutput(false);
-        }
-      });
-
-  webServer.begin();
-  MDNS.addService("http", "tcp", 80);
-
+  // Requests are served by the httpd task; this task only stays alive.
   for (;;) {
-    REG_ON(REG_LED1);
-    webServer.handleClient();
-    yield();
-    REG_OFF(REG_LED1);
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }

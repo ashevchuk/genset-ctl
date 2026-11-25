@@ -1,5 +1,5 @@
 /*
- * mcp9600_dev.h — minimal MCP9600 thermocouple driver, direct Wire access.
+ * mcp9600_dev.h — minimal MCP9600 thermocouple driver, direct I2C access (i2c_bus.h).
  *
  * Replaces the SparkFun MCP9600 library with a thin driver exposing only
  * what this project uses: presence check, device-ID check, data-ready
@@ -10,7 +10,8 @@
 #ifndef MCP9600_DEV_H
 #define MCP9600_DEV_H
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 
 class Mcp9600Dev {
 public:

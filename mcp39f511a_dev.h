@@ -13,7 +13,8 @@
 #ifndef MCP39F511A_DEV_H
 #define MCP39F511A_DEV_H
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 

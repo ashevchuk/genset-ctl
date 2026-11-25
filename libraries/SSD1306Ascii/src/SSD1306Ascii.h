@@ -28,7 +28,10 @@
  */
 #ifndef SSD1306Ascii_h
 #define SSD1306Ascii_h
-#include "Arduino.h"
+// Local change (genset-ctl): no Arduino core. The Print base class is
+// replaced by the print()/println() overloads this firmware uses.
+#include <stddef.h>
+#include <stdint.h>
 #include "SSD1306init.h"
 #include "fonts/allFonts.h"
 //------------------------------------------------------------------------------
@@ -107,13 +110,7 @@
  *
  * @param[in] rst Reset pin number.
  */
-inline void oledReset(uint8_t rst) {
-  pinMode(rst, OUTPUT);
-  digitalWrite(rst, LOW);
-  delay(10);
-  digitalWrite(rst, HIGH);
-  delay(10);
-}
+void oledReset(uint8_t rst);  // Arduino-only, not built here (genset-ctl)
 //------------------------------------------------------------------------------
 /**
  * @struct TickerState
@@ -140,10 +137,17 @@ struct TickerState {
  * @class SSD1306Ascii
  * @brief SSD1306 base class
  */
-class SSD1306Ascii : public Print {
+class SSD1306Ascii {
  public:
-  using Print::write;
   SSD1306Ascii() {}
+  /** Write a string (as Arduino Print::print(const char*) did). */
+  size_t print(const char* s) {
+    size_t n = 0;
+    while (*s) n += write(static_cast<uint8_t>(*s++));
+    return n;
+  }
+  /** Write a string followed by "\r\n" (as Print::println did). */
+  size_t println(const char* s = "") { return print(s) + print("\r\n"); }
 #if INCLUDE_SCROLLING
   //----------------------------------------------------------------------------
   /**
@@ -451,9 +455,6 @@ class SSD1306Ascii : public Print {
    * @param[in] str Pointer to String object. Clear queue if nullptr.
    * @return false if queue is full else true.
    */
-  bool tickerText(TickerState* state, const String& str) {
-    return tickerText(state, str.c_str());
-  }
   /**
    *  @brief Add text pointer to display queue.
    *

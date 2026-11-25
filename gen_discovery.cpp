@@ -1,37 +1,46 @@
 #include "gen_discovery.h"
-#include <WiFi.h>
-#include <WiFiUdp.h>
+#include <lwip/sockets.h>
 #include <cstring>
 
-extern String wifiHostname;
+extern char wifiHostname[33];
 
-static WiFiUDP s_udp;
-static bool    s_began = false;
+static int s_sock = -1;
 
 void gen_discovery_begin(void) {
-  s_began = s_udp.begin(GEN_DISCOVERY_UDP_PORT);
+  int sock = socket(AF_INET, SOCK_DGRAM, 0);
+  if (sock < 0) return;
+  int yes = 1;
+  setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  struct sockaddr_in addr = {};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(GEN_DISCOVERY_UDP_PORT);
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    close(sock);
+    return;
+  }
+  fcntl(sock, F_SETFL, O_NONBLOCK);
+  s_sock = sock;
 }
 
 void gen_discovery_poll(void) {
-  if (!s_began) return;
-  int n = s_udp.parsePacket();
-  if (n != (int)sizeof(GenDiscoveryPkt)) {
-    if (n > 0) s_udp.flush();
-    return;
-  }
+  if (s_sock < 0) return;
+  // One byte larger than a valid packet so an oversized datagram is
+  // detected by its length instead of being silently truncated to fit.
+  uint8_t buf[sizeof(GenDiscoveryPkt) + 1];
+  struct sockaddr_in remote = {};
+  socklen_t remote_len = sizeof(remote);
+  int n = recvfrom(s_sock, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr *)&remote, &remote_len);
+  if (n != (int)sizeof(GenDiscoveryPkt)) return;
+
   GenDiscoveryPkt pkt;
-  if (s_udp.read((uint8_t *)&pkt, sizeof(pkt)) != (int)sizeof(pkt)) return;
+  memcpy(&pkt, buf, sizeof(pkt));
   if (pkt.magic != GEN_DISCOVERY_MAGIC || pkt.proto_version != GEN_DISCOVERY_PROTO_VERSION ||
       pkt.type != GEN_DISCOVERY_TYPE_REQUEST)
     return;
 
-  IPAddress remoteIp   = s_udp.remoteIP();
-  uint16_t  remotePort = s_udp.remotePort();
-
   GenDiscoveryPkt reply = {GEN_DISCOVERY_MAGIC, GEN_DISCOVERY_PROTO_VERSION,
                             GEN_DISCOVERY_TYPE_REPLY, {0}};
-  strlcpy(reply.name, wifiHostname.c_str(), sizeof(reply.name));
-  s_udp.beginPacket(remoteIp, remotePort);
-  s_udp.write((const uint8_t *)&reply, sizeof(reply));
-  s_udp.endPacket();
+  strlcpy(reply.name, wifiHostname, sizeof(reply.name));
+  sendto(s_sock, &reply, sizeof(reply), 0, (struct sockaddr *)&remote, remote_len);
 }

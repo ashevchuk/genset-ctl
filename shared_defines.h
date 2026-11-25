@@ -10,12 +10,14 @@
 // units), but it closes the one real risk duplication carries: nothing
 // catches two copies silently drifting apart if only one is ever edited.
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
+#include "uptime.h"
 #include "statemachine.h" // sendOutputCommand()/CMD_REG_ON, for RTOS_REG_ON
 
-// millis()-based "now" used throughout timing logic (state machine timers,
+// uptime_ms()-based "now" used throughout timing logic (state machine timers,
 // the main .cpp's own VBAT probe and WiFi reconnect backoff).
-#define CURRENT_TIME millis()
+#define CURRENT_TIME uptime_ms()
 
 // Smoothed<>/SmoothedSafe<> sample count for the ADC2 channels (adc_2_0/
 // adc_2_1). ADC1_SMOOTH/RPM_SMOOTH and their _METHOD siblings

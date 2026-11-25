@@ -15,7 +15,7 @@ get_filename_component(PROJECT_ROOT_COMPONENT_NAME "${PROJECT_ROOT_ABS}" NAME)
 idf_component_register(
     SRCS "esp32-gen-ctl-ai-rtos.cpp"
     INCLUDE_DIRS "."
-    REQUIRES arduino-esp32 ${PROJECT_ROOT_COMPONENT_NAME} ArduinoJson AsyncWiFiMulti PubSubClient WebSockets WebServer WiFiManager Smoothed
+    REQUIRES ${PROJECT_ROOT_COMPONENT_NAME} ArduinoJson Smoothed
              esp_partition wear_levelling app_update esp_timer esp_wifi lwip
 )
 

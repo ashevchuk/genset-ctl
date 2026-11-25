@@ -12,6 +12,7 @@
 #include <esp_system.h>
 #include <esp_core_dump.h>
 #include <time.h>
+#include "uptime.h"
 
 static_assert(sizeof(FramLogRecord) == 32, "FramLogRecord must be 32 bytes");
 
@@ -345,7 +346,7 @@ bool fram_log_maintenance(uint8_t subtype, const char *note) {
 // ---------------------------------------------------------------------------
 // Service tick — called once per I2CTask tick (its sole owner). Used to be
 // LogTask's own for(;;) loop body on a dedicated task; I2CTask is now the
-// only thing that ever touches Wire, so this is just a plain function on
+// only thing that ever touches the I2C bus, so this is just a plain function on
 // its schedule instead of a separate task+mutex pair.
 // ---------------------------------------------------------------------------
 void fram_log_service_tick(void) {
@@ -365,7 +366,7 @@ void fram_log_service_tick(void) {
     // Accumulate engine / charger runtime from wall clock.
     static uint32_t last_tick_ms = 0;
     static uint32_t run_ms_accum = 0, charge_ms_accum = 0;
-    uint32_t now_ms = millis();
+    uint32_t now_ms = uptime_ms();
     if (last_tick_ms == 0) last_tick_ms = now_ms;  // first call
     uint32_t elapsed = now_ms - last_tick_ms;
     last_tick_ms = now_ms;

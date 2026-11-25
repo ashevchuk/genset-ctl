@@ -1,6 +1,7 @@
 #pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <ArduinoJson.h>
 
 // WiFi config persistence: /wifi.json on FFat. Needed by both the main .cpp

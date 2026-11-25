@@ -2,16 +2,15 @@
 
 #if BOOTLOADER_UPDATE_ENDPOINT_ENABLED
 
-#include <Arduino.h>
-#include <WebServer.h>
 #include <esp_flash.h>
+#include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <string.h>
 #include "esp_private/esp_flash_internal.h"
 #include "rtos_config.h"
 #include "debug.h"
+#include "http_server.h"
 
-extern WebServer webServer;
 extern SemaphoreHandle_t xFlashI2CGuard;
 
 // Fixed by this project's own partition table (partitions.csv): the
@@ -153,84 +152,103 @@ static esp_err_t bootloader_flash_write_verified(const uint8_t *data, size_t len
     return ESP_FAIL;
 }
 
-void setup_bootloader_update_route(void) {
-    webServer.on(
-        "/api/bootloader/update", http_method::HTTP_POST,
-        []() {
-            if (!s_upload_ok) {
-                webServer.send(400, "text/plain", "FAIL (see serial log for reason)");
-                bootloader_update_reset_buffer();
-                return;
-            }
-            if (!s_upload_buf || s_upload_len == 0) {
-                webServer.send(400, "text/plain", "FAIL (no data received)");
-                return;
-            }
-            if (s_upload_buf[0] != ESP_IMAGE_MAGIC_BYTE) {
-                SLOG_PRINTLN("[bootloader_update] REFUSED: uploaded file doesn't start with the ESP image magic byte (0xE9) — not touching flash.");
-                webServer.send(400, "text/plain", "FAIL (not a valid ESP image — wrong magic byte)");
-                bootloader_update_reset_buffer();
-                return;
-            }
+// Collects the file part into s_upload_buf (bounded by the bootloader
+// region size).
+class BootloaderUpload : public UploadHandler {
+public:
+    explicit BootloaderUpload(bool confirmed) : confirmed_(confirmed) {}
+    bool on_file_start(const std::string &field, const std::string &filename) override {
+        (void)field;
+        if (!confirmed_) return true;  // refusal already recorded in s_upload_ok
+        bootloader_update_reset_buffer();
+        s_upload_buf = (uint8_t *)malloc(BOOTLOADER_FLASH_MAX_SIZE);
+        if (!s_upload_buf) {
+            SLOG_PRINTLN("[bootloader_update] REFUSED: malloc failed.");
+            s_upload_ok = false;
+            return true;
+        }
+        SLOG_PRINTF("[bootloader_update] Upload started: %s\n", filename.c_str());
+        return true;
+    }
+    bool on_file_data(const uint8_t *data, size_t len) override {
+        if (!s_upload_ok || !s_upload_buf) return true;
+        if (s_upload_len + len > BOOTLOADER_FLASH_MAX_SIZE) {
+            SLOG_PRINTF("[bootloader_update] REFUSED: upload exceeds max bootloader size (0x%lx bytes) — not a plausible bootloader image.\n",
+                        (unsigned long)BOOTLOADER_FLASH_MAX_SIZE);
+            s_upload_ok = false;
+            return true;
+        }
+        memcpy(s_upload_buf + s_upload_len, data, len);
+        s_upload_len += len;
+        return true;
+    }
+    bool on_file_end() override { return true; }
+    void on_file_end_aborted() override { bootloader_update_reset_buffer(); }
 
-            bool held = (xSemaphoreTake(xFlashI2CGuard, pdMS_TO_TICKS(600)) == pdTRUE);
-            esp_flash_set_dangerous_write_protection(esp_flash_default_chip, false);
-            esp_err_t err = bootloader_flash_write_verified(s_upload_buf, s_upload_len);
-            esp_flash_set_dangerous_write_protection(esp_flash_default_chip, true);
-            if (held) xSemaphoreGive(xFlashI2CGuard);
+private:
+    bool confirmed_;
+};
 
-            if (err != ESP_OK) {
-                // Every attempt (erase+write+verify, retried
-                // BOOTLOADER_UPDATE_MAX_ATTEMPTS times) failed. The bootloader
-                // region is now in an unknown state — exactly the
-                // unrecoverable-without-USB scenario this whole route exists
-                // to avoid causing by accident. Nothing left to do here but
-                // report it as loudly as possible; there is no further
-                // software fallback once retries are exhausted.
-                SLOG_PRINTF("[bootloader_update] FAILED after %d attempts — bootloader flash region is now in an UNKNOWN/PARTIAL state. Do not power-cycle. USB recovery will be required.\n", BOOTLOADER_UPDATE_MAX_ATTEMPTS);
-                webServer.send(500, "text/plain", "FAIL (all retries exhausted — bootloader region left in an unknown state, USB recovery needed)");
-                bootloader_update_reset_buffer();
-                return;
-            }
+static esp_err_t send_plain(httpd_req_t *req, const char *status, const char *body) {
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, body);
+}
 
-            SLOG_PRINTLN("[bootloader_update] Write verified OK. Rebooting to confirm the new bootloader...");
-            webServer.send(200, "text/plain", "OK. Rebooting...");
-            bootloader_update_reset_buffer();
-            vTaskDelay(pdMS_TO_TICKS(200));
-            esp_restart();
-        },
-        []() {
-            HTTPUpload &upload = webServer.upload();
+esp_err_t bootloader_update_handler(httpd_req_t *req) {
+    char query[64] = "";
+    char confirm[8] = "";
+    bool confirmed = httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+                     httpd_query_key_value(query, "confirm", confirm, sizeof(confirm)) == ESP_OK &&
+                     strcmp(confirm, "1") == 0;
 
-            if (upload.status == UPLOAD_FILE_START) {
-                if (!webServer.hasArg("confirm") || webServer.arg("confirm") != "1") {
-                    SLOG_PRINTLN("[bootloader_update] REFUSED: missing confirm=1 query param.");
-                    s_upload_ok = false;
-                    return;
-                }
-                bootloader_update_reset_buffer();
-                s_upload_buf = (uint8_t *)malloc(BOOTLOADER_FLASH_MAX_SIZE);
-                if (!s_upload_buf) {
-                    SLOG_PRINTLN("[bootloader_update] REFUSED: malloc failed.");
-                    s_upload_ok = false;
-                    return;
-                }
-                SLOG_PRINTF("[bootloader_update] Upload started: %s\n", upload.filename.c_str());
-            } else if (upload.status == UPLOAD_FILE_WRITE) {
-                if (!s_upload_ok || !s_upload_buf) return;
-                if (s_upload_len + upload.currentSize > BOOTLOADER_FLASH_MAX_SIZE) {
-                    SLOG_PRINTF("[bootloader_update] REFUSED: upload exceeds max bootloader size (0x%lx bytes) — not a plausible bootloader image.\n",
-                                (unsigned long)BOOTLOADER_FLASH_MAX_SIZE);
-                    s_upload_ok = false;
-                    return;
-                }
-                memcpy(s_upload_buf + s_upload_len, upload.buf, upload.currentSize);
-                s_upload_len += upload.currentSize;
-                esp_task_wdt_reset();
-            } else if (upload.status == UPLOAD_FILE_ABORTED) {
-                bootloader_update_reset_buffer();
-            }
-        });
+    bootloader_update_reset_buffer();
+    if (!confirmed) {
+        SLOG_PRINTLN("[bootloader_update] REFUSED: missing confirm=1 query param.");
+        s_upload_ok = false;
+    }
+    BootloaderUpload upload(confirmed);
+    bool complete = false;
+    if (!receive_multipart(req, upload, complete) || !complete) {
+        bootloader_update_reset_buffer();
+        return ESP_FAIL;
+    }
+
+    if (!s_upload_ok) {
+        bootloader_update_reset_buffer();
+        return send_plain(req, "400 Bad Request", "FAIL (see serial log for reason)");
+    }
+    if (!s_upload_buf || s_upload_len == 0) {
+        return send_plain(req, "400 Bad Request", "FAIL (no data received)");
+    }
+    if (s_upload_buf[0] != ESP_IMAGE_MAGIC_BYTE) {
+        SLOG_PRINTLN("[bootloader_update] REFUSED: uploaded file doesn't start with the ESP image magic byte (0xE9) — not touching flash.");
+        bootloader_update_reset_buffer();
+        return send_plain(req, "400 Bad Request", "FAIL (not a valid ESP image — wrong magic byte)");
+    }
+
+    bool held = (xSemaphoreTake(xFlashI2CGuard, pdMS_TO_TICKS(600)) == pdTRUE);
+    esp_flash_set_dangerous_write_protection(esp_flash_default_chip, false);
+    esp_err_t err = bootloader_flash_write_verified(s_upload_buf, s_upload_len);
+    esp_flash_set_dangerous_write_protection(esp_flash_default_chip, true);
+    if (held) xSemaphoreGive(xFlashI2CGuard);
+
+    if (err != ESP_OK) {
+        // Every attempt (erase+write+verify, retried
+        // BOOTLOADER_UPDATE_MAX_ATTEMPTS times) failed. The bootloader region
+        // is now in an unknown state; there is no further software fallback.
+        SLOG_PRINTF("[bootloader_update] FAILED after %d attempts — bootloader flash region is now in an UNKNOWN/PARTIAL state. Do not power-cycle. USB recovery will be required.\n", BOOTLOADER_UPDATE_MAX_ATTEMPTS);
+        bootloader_update_reset_buffer();
+        return send_plain(req, "500 Internal Server Error",
+                          "FAIL (all retries exhausted — bootloader region left in an unknown state, USB recovery needed)");
+    }
+
+    SLOG_PRINTLN("[bootloader_update] Write verified OK. Rebooting to confirm the new bootloader...");
+    send_plain(req, "200 OK", "OK. Rebooting...");
+    bootloader_update_reset_buffer();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_restart();
+    return ESP_OK;
 }
 
 #endif  // BOOTLOADER_UPDATE_ENDPOINT_ENABLED

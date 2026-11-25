@@ -34,3 +34,10 @@ claude.sh
 # --- editor/OS cruft ---
 .DS_Store
 *.swp
+
+# Local-only: scratch notes, per-machine Claude settings, OTA/upload target pointers
+.notes/
+.claude/settings.local.json
+/host
+/host_gen
+/host_test

@@ -1,0 +1,18 @@
+# Vendored/third-party code, deliberately excluded from the knowledge graph
+# (2026-09-18 /graphify run: scoped to this project's own code, not its
+# bundled dependencies). Keep display/'s own firmware (ui.cpp, ws_client.cpp,
+# journal.cpp, config.cpp, display.ino, ...) in scope — only the vendored
+# driver/BSP/library layers below are excluded.
+libraries/
+display/libraries/
+display/JC3248W535EN-Touch-LCD/
+display/esp_bsp.c
+display/esp_bsp.h
+display/esp_lcd_axs15231b.c
+display/esp_lcd_axs15231b.h
+display/esp_lcd_touch.c
+display/esp_lcd_touch.h
+display/lv_port.c
+display/lv_port.h
+display/lv_conf.h
+display/bsp_err_check.h

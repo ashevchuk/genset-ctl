@@ -1,5 +1,6 @@
 #include "update_mode.h"
 #include <esp_system.h>
+#include <esp_ota_ops.h>
 
 #include "wifi_net.h"
 #include <mdns.h>
@@ -14,6 +15,9 @@
 
 // Fallback AP credentials this recovery mode connects to — used nowhere
 // else, so no reason for these to be visible outside this file.
+#define UPDATE_MODE_CONNECT_ATTEMPTS 30
+#define UPDATE_MODE_CONNECT_WAIT_MS  10000
+
 static const char *wifi_fb_host = "gen-ctl";
 static const char *wifi_fb_ssid = "xxxxxxxxxxx";
 static const char *wifi_fb_password = "xxxxxxxxxxx";
@@ -25,17 +29,19 @@ void update_mode(void) {
   oled.println("Update mode");
 
   wifi_net_start_sta();
-  wifi_net_connect(wifi_fb_ssid, wifi_fb_password);
 
   oled.print("Connecting: ");
   oled.println(wifi_fb_ssid);
 
-  for (uint8_t i = 0; i < 5; i++) {
-    if (wifi_net_wait_connected(60000)) {
+  // Connect again on every attempt: after a reset the AP still holds the old
+  // session for ~30 s and rejects auth (reason 202), which is not retried
+  // automatically.
+  for (uint8_t i = 0; i < UPDATE_MODE_CONNECT_ATTEMPTS; i++) {
+    wifi_net_connect(wifi_fb_ssid, wifi_fb_password);
+    if (wifi_net_wait_connected(UPDATE_MODE_CONNECT_WAIT_MS)) {
       break;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(100));
     SLOG_PRINT(".");
     oled.print(".");
   }
@@ -74,6 +80,16 @@ void update_mode(void) {
 
   if (!http_server_start_update_mode()) {
     SLOG_PRINTLN("[update_mode] http_server start failed");
+  } else {
+    // ReportTask's soak never runs here, so an image flashed through this
+    // mode would roll back on the next reboot. Reaching this point proves it
+    // can take another OTA, which is all recovery needs.
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
+        state == ESP_OTA_IMG_PENDING_VERIFY) {
+      SLOG_PRINTLN("[update_mode] confirming the running image");
+      esp_ota_mark_app_valid_cancel_rollback();
+    }
   }
   mdns_service_add(nullptr, "_http", "_tcp", 80, nullptr, 0);
 

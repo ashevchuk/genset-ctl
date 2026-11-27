@@ -84,7 +84,7 @@
         "name": "run",
         "label": "Start once",
         "command": {
-          "on": "stop",
+          "on": "start",
           "off": "start"
         }
       },
@@ -92,7 +92,7 @@
         "name": "run",
         "label": "Start retry",
         "command": {
-          "on": "stop",
+          "on": "start_retry",
           "off": "start_retry"
         }
       },

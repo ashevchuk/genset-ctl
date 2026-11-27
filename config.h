@@ -55,7 +55,10 @@ struct BatteryConfig_t {
     uint32_t read_running_period_ms;     // read period while running (was READ_BAT_RUNNING_PERIOD)
     uint32_t read_after_run_period_ms;   // fast read period just after stopping (was READ_BAT_AFTER_RUN_PERIOD)
     uint32_t read_charging_period_ms;    // read period while actively charging (was READ_BAT_CHARGING_PERIOD)
-    bool     psu_loss_backup_enabled;    // force REG_BATT_FORCE on if PSU_SENSE AND GEN_SENSE both drop while idle (opt-in) — name kept for config-file compat, see psu_backup_check()
+    bool     psu_loss_backup_enabled;    // keep the battery connected while neither PSU_SENSE nor GEN_SENSE is present (opt-in), see psu_backup_check()
+    bool     psu_autostart_enabled;      // start_retry on PSU loss, stop on its return; only acts with psu_loss_backup_enabled
+    uint32_t psu_autostart_delay_s;      // PSU must stay absent this long before the autostart fires
+    uint32_t psu_autostop_delay_s;       // PSU must stay present this long before an autostarted engine is stopped
 };
 extern BatteryConfig_t g_battery_config;
 

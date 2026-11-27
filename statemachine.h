@@ -29,11 +29,9 @@ void measure_bat_voltage();
 void choke_ensure_battery(void);
 void choke_release_battery(void);
 
-// Configurable (BatteryConfig_t.psu_loss_backup_enabled): while idle, forces
-// the battery on if both PSU_SENSE and GEN_SENSE are lost, releases it once
-// either returns. Call once per StateMachineTask iteration from
-// process_STATE_IDLE() only — STARTING/STARTED/RUNNING have their own
-// REG_BATT_FORCE lifecycle this must not fight with.
+// Configurable (BatteryConfig_t.psu_loss_backup_enabled): in every state,
+// holds the battery while both PSU_SENSE and GEN_SENSE are lost and releases
+// it once either returns. Called once per StateMachineTask iteration.
 void psu_backup_check(void);
 
 // Derives FRAM journal events (START_OK/START_FAIL/EMERGENCY_STOP/STOPPED)

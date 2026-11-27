@@ -12,6 +12,7 @@
 #include "shiftreg.h"
 #include "buzzer.h"
 #include "debug.h"
+#include "config.h"
 #include <esp_task_wdt.h>
 #include <driver/gpio.h>
 #include <esp_rom_sys.h>
@@ -253,6 +254,24 @@ void setup_shift_reg() {
   pin_write(PIN_SHIFT_REG_OUTPUT_ENABLE, 0);
 }
 
+// PSU-loss backup, fast path. The relay driver runs from the main supply rail,
+// which only a hold-up capacitor (about 1 s) keeps alive once PSU and genset
+// output are both gone. StateMachineTask can be inside a blocking wait of up
+// to ~2 s (battery measurement, choke battery force), so the battery is
+// connected here, at input-read time, on the same falling edge
+// psu_backup_check() reacts to; that function then takes ownership.
+// Caller holds xShiftRegMutex.
+static void psu_backup_fast_engage(uint8_t inputs) {
+  static bool prev_ext_power_ok = true;  // same boot assumption as psu_backup_check()
+  bool ext_power_ok = (inputs & ((1 << REG_IN_PSU_SENSE) | (1 << REG_IN_GEN_SENSE))) != 0;
+  if (g_battery_config.psu_loss_backup_enabled && prev_ext_power_ok && !ext_power_ok &&
+      !IS_REG_ON(REG_BATT_FORCE)) {
+    SET_SHIFT_REG(REG_BATT_FORCE, 1);
+    reg_write();
+  }
+  prev_ext_power_ok = ext_power_ok;
+}
+
 // ----------------------------------------------------------------------------
 // ShiftRegTask: Handle shift register I/O
 // ----------------------------------------------------------------------------
@@ -307,6 +326,7 @@ void ShiftRegTask(void *pvParameters) {
 
             // Read inputs
             uint8_t inputs = reg_read();
+            psu_backup_fast_engage(inputs);
             uint16_t outputs = shift_reg;
             xSemaphoreGiveRecursive(xShiftRegMutex);
 

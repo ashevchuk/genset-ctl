@@ -855,6 +855,9 @@ static esp_err_t wifi_save_handler(httpd_req_t *req) {
     battery_obj["read_after_run_period_ms"] = atol(p("bat_read_after_run_period").c_str());
     battery_obj["read_charging_period_ms"]  = atol(p("bat_read_charging_period").c_str());
     battery_obj["psu_loss_backup_enabled"]  = (atoi(p("bat_psu_loss_backup").c_str()) != 0);
+    battery_obj["psu_autostart_enabled"]    = (atoi(p("bat_psu_autostart").c_str()) != 0);
+    battery_obj["psu_autostart_delay_s"]    = atol(p("bat_psu_autostart_delay").c_str());
+    battery_obj["psu_autostop_delay_s"]     = atol(p("bat_psu_autostop_delay").c_str());
 
     JsonObject engine_obj = doc["engine"].to<JsonObject>();
     engine_obj["rpm_max"]                = atol(p("engine_rpm_max").c_str());

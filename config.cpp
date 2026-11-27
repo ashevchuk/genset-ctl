@@ -44,6 +44,9 @@ BatteryConfig_t g_battery_config = {
     .read_after_run_period_ms  = 1000UL * 5,
     .read_charging_period_ms   = 1000UL * 60 * 5,
     .psu_loss_backup_enabled   = false,
+    .psu_autostart_enabled     = false,
+    .psu_autostart_delay_s     = 10,
+    .psu_autostop_delay_s      = 120,
 };
 
 EngineConfig_t g_engine_config = {
@@ -113,6 +116,9 @@ void battery_config_load(const JsonDocument &doc) {
     g_battery_config.read_after_run_period_ms = b["read_after_run_period_ms"] | (1000UL * 5);
     g_battery_config.read_charging_period_ms  = b["read_charging_period_ms"]  | (1000UL * 60 * 5);
     g_battery_config.psu_loss_backup_enabled  = b["psu_loss_backup_enabled"]  | false;
+    g_battery_config.psu_autostart_enabled    = b["psu_autostart_enabled"]    | false;
+    g_battery_config.psu_autostart_delay_s    = b["psu_autostart_delay_s"]    | 10;
+    g_battery_config.psu_autostop_delay_s     = b["psu_autostop_delay_s"]     | 120;
     // Sync the live read-period variable in case we're loading this after
     // boot has already picked a period based on the old (default) value.
     readBatPeriod = g_battery_config.read_period_ms;

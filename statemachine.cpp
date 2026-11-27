@@ -46,6 +46,14 @@ state prevState = STATE_INIT;
 // file after pass 2.
 static bool choke_forced_battery = false;
 static bool psu_backup_engaged = false;
+// PSU-loss autostart (psu_autostart_check()). psu_autostarted: the running
+// engine was started by it, so the PSU return may stop it. psu_outage_handled:
+// this outage already got its one start attempt, or the operator stopped the
+// engine during it; cleared when PSU returns.
+static bool     psu_autostarted = false;
+static bool     psu_outage_handled = false;
+static uint32_t psu_lost_since_ms = 0;
+static uint32_t psu_back_since_ms = 0;
 static uint32_t flog_last_stop_req_ms = 0;
 static bool flog_pending_temp_limit_stop = false;
 // Length of the last cooldown run of the current engine session, for the
@@ -99,6 +107,34 @@ static bool read_ina233_now(double *voltage) {
     if (!i2c_run_on_owner(job_read_ina233_now, &s_voltage, s_done, pdMS_TO_TICKS(200))) return false;
     *voltage = s_voltage;
     return true;
+}
+
+static bool external_power_present(void) {
+  return IS_REG_IN_ON(REG_IN_PSU_SENSE) || IS_REG_IN_ON(REG_IN_GEN_SENSE);
+}
+
+// The battery relay latches: REG_BATT_FORCE connects it, a REG_BATT_OFF pulse
+// disconnects it (REG_IN_BAT_SENSE follows). With PSU-loss backup enabled and
+// no external power the battery is the controller's only supply, so instead
+// of cutting it the backup takes it over and releases it once PSU or genset
+// output returns. Returns false when the battery was kept connected.
+static bool battery_disconnect(void) {
+  if (g_battery_config.psu_loss_backup_enabled && !external_power_present()) {
+    SDEBUG_CHARGING("[BAT] keeping battery connected: no external power, PSU backup takes it over");
+    psu_backup_engaged = true;
+    return false;
+  }
+  REG_OFF(REG_BATT_FORCE);
+  REG_ON(REG_BATT_OFF);
+
+  unsigned long long waitTime = CURRENT_TIME;
+  while ((CURRENT_TIME - waitTime <= 1000) && IS_REG_IN_ON(REG_IN_BAT_SENSE)) {
+    read_regs();
+    esp_task_wdt_reset();
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  REG_OFF(REG_BATT_OFF);
+  return true;
 }
 
 void measure_bat_voltage() {
@@ -171,20 +207,9 @@ void measure_bat_voltage() {
 
       if (reg_bat_force_off) {
         SDEBUG_CHARGING("[BAT] measure_bat_voltage: restoring BATT_FORCE=OFF, BATT_OFF=ON");
-        REG_OFF(REG_BATT_FORCE);
-        REG_ON(REG_BATT_OFF);
-
-        waitTime = CURRENT_TIME;
-
-        while ((CURRENT_TIME - waitTime <= 1000) &&
-               (IS_REG_IN_ON(REG_IN_BAT_SENSE))) {
-          read_regs();
-          esp_task_wdt_reset();
-          vTaskDelay(pdMS_TO_TICKS(1));
-        };
-
-        REG_OFF(REG_BATT_OFF);
-        SDEBUG_CHARGING("[BAT] measure_bat_voltage: battery disconnected after ", (unsigned long)(CURRENT_TIME - waitTime), "ms");
+        if (battery_disconnect()) {
+          SDEBUG_CHARGING("[BAT] measure_bat_voltage: battery disconnected");
+        }
       }
     } else {
       SDEBUG_CHARGING("[BAT] measure_bat_voltage: BATT_FORCE already ON but BAT_SENSE=OFF — no measurement");
@@ -239,97 +264,105 @@ void choke_release_battery(void) {
   if (!choke_forced_battery) return;
 
   SDEBUG("[CHOKE] releasing forced battery connection");
-  REG_OFF(REG_BATT_FORCE);
-  REG_ON(REG_BATT_OFF);
-
-  unsigned long long waitTime = CURRENT_TIME;
-  while ((CURRENT_TIME - waitTime <= 1000) && IS_REG_IN_ON(REG_IN_BAT_SENSE)) {
-    read_regs();
-    esp_task_wdt_reset();
-    vTaskDelay(pdMS_TO_TICKS(1));
-  }
-  REG_OFF(REG_BATT_OFF);
+  battery_disconnect();
 
   choke_forced_battery = false;
 }
 
 // Configurable via /wifi-config (BatteryConfig_t.psu_loss_backup_enabled).
-// While the generator isn't running: if BOTH PSU_SENSE and GEN_SENSE drop —
-// i.e. the controller has no external power source left at all — force the
-// battery on (REG_BATT_FORCE) to keep the controller powered; once either
-// one returns, release it (REG_BATT_FORCE off + a REG_BATT_OFF latch-reset
-// pulse, same pattern as choke_release_battery()/measure_bat_voltage()).
-// GEN_SENSE alone (PSU lost, genset output already powering the controller)
-// deliberately does NOT engage this — forcing the battery on top of a live
-// external supply is pointless. Tracking a single combined signal (instead
-// of PSU_SENSE alone) also means: if backup is already engaged and GEN_SENSE
-// then appears, it gets released same as a PSU return would; and if backup
-// wasn't engaged because GEN_SENSE was covering for a lost PSU_SENSE and GEN
-// then disappears too, that now correctly engages backup instead of being
-// missed (a second edge that could never fire against PSU_SENSE alone, since
-// it had already been sitting at "off" the whole time). Only called from
-// process_STATE_IDLE() — STARTING/STARTED/RUNNING already have their own
-// REG_BATT_FORCE lifecycle (choke power, then unconditional cleanup on
-// start) that this must not fight with.
+// Called every StateMachineTask tick, in every state: if BOTH PSU_SENSE and
+// GEN_SENSE drop, the controller has no external supply left, so the battery
+// is connected (REG_BATT_FORCE) and kept; battery_disconnect() refuses to cut
+// it meanwhile. Covers a stop in the middle of an outage too: the engine
+// dying drops GEN_SENSE, which is the falling edge here.
+// Engaging reacts to the falling edge only, so an operator who switches the
+// battery off by hand is not overridden until external power comes and goes
+// again. Releasing is level-based: whenever external power is present and
+// the backup still holds the battery, it lets go (unless a start sequence
+// is running, or the choke or the battery-dependency check still needs it).
+// GEN_SENSE can flicker while cranking; releasing the battery then would cut
+// the controller's supply between attempts, so release waits for the result.
+static bool start_sequence_active(void) {
+  return IS_CURRENT_STATE(STATE_STARTING_SINGLE) || IS_CURRENT_STATE(STATE_STARTING) ||
+         IS_CURRENT_STATE(STATE_STARTING_RETRY) || IS_CURRENT_STATE(STATE_STARTING_RETRY_TRY) ||
+         IS_CURRENT_STATE(STATE_STOPPING_RETRY) || IS_CURRENT_STATE(STATE_STOPPED_RETRY);
+}
+
 void psu_backup_check(void) {
   static bool psu_backup_prev_ext_power_ok = true;  // assume present at boot
+  bool ext_power_ok_now = external_power_present();
+
   if (!g_battery_config.psu_loss_backup_enabled) {
     if (psu_backup_engaged) {
-      SDEBUG_CHARGING("[BAT] PSU backup: feature disabled while engaged — releasing");
-      REG_OFF(REG_BATT_FORCE);
-      REG_ON(REG_BATT_OFF);
-
-      unsigned long long waitTime = CURRENT_TIME;
-      while ((CURRENT_TIME - waitTime <= 1000) && IS_REG_IN_ON(REG_IN_BAT_SENSE)) {
-        read_regs();
-        esp_task_wdt_reset();
-        vTaskDelay(pdMS_TO_TICKS(1));
-      }
-      REG_OFF(REG_BATT_OFF);
-
+      SDEBUG_CHARGING("[BAT] PSU backup: feature disabled while engaged, releasing");
       psu_backup_engaged = false;
+      if (!choke_forced_battery && !battery_dependency_forced) battery_disconnect();
     }
-    // Keep tracking the live level so re-enabling later doesn't see a stale edge.
-    psu_backup_prev_ext_power_ok = IS_REG_IN_ON(REG_IN_PSU_SENSE) || IS_REG_IN_ON(REG_IN_GEN_SENSE);
+    psu_backup_prev_ext_power_ok = ext_power_ok_now;
     return;
   }
 
-  bool ext_power_ok_now = IS_REG_IN_ON(REG_IN_PSU_SENSE) || IS_REG_IN_ON(REG_IN_GEN_SENSE);
-
   if (psu_backup_prev_ext_power_ok && !ext_power_ok_now) {
-    // Falling edge: neither PSU nor genset output is present any more.
-    if (IS_REG_OFF(REG_BATT_FORCE)) {
-      SDEBUG_CHARGING("[BAT] PSU backup: PSU_SENSE and GEN_SENSE both lost while idle — forcing REG_BATT_FORCE on");
-      REG_ON(REG_BATT_FORCE);
-      psu_backup_engaged = true;
-      // Keep the battery-only shutdown-threshold check (below, in
-      // process_STATE_IDLE()) live for the whole outage instead of letting
-      // it lapse after g_timing_config.after_run_period_ms of inactivity.
-      afterRunPeriod = true;
-      afterRunPeriodTime = CURRENT_TIME;
-    } else {
-      SDEBUG_CHARGING("[BAT] PSU backup: PSU_SENSE and GEN_SENSE both lost but REG_BATT_FORCE already on (not ours) — not touching it");
-    }
-  } else if (!psu_backup_prev_ext_power_ok && ext_power_ok_now) {
-    // Rising edge: PSU or genset output returned.
-    if (psu_backup_engaged) {
-      SDEBUG_CHARGING("[BAT] PSU backup: external power restored — releasing REG_BATT_FORCE");
-      REG_OFF(REG_BATT_FORCE);
-      REG_ON(REG_BATT_OFF);
+    SDEBUG_CHARGING("[BAT] PSU backup: PSU_SENSE and GEN_SENSE both lost, holding the battery");
+    if (IS_REG_OFF(REG_BATT_FORCE)) REG_ON(REG_BATT_FORCE);
+    psu_backup_engaged = true;
+    // Keep the battery-only shutdown-threshold check in process_STATE_IDLE()
+    // live for the whole outage instead of letting it lapse after
+    // g_timing_config.after_run_period_ms of inactivity.
+    afterRunPeriod = true;
+    afterRunPeriodTime = CURRENT_TIME;
+  } else if (ext_power_ok_now && psu_backup_engaged && !start_sequence_active()) {
+    SDEBUG_CHARGING("[BAT] PSU backup: external power present, releasing the battery");
+    psu_backup_engaged = false;
+    if (!choke_forced_battery && !battery_dependency_forced) battery_disconnect();
+  }
+  psu_backup_prev_ext_power_ok = ext_power_ok_now;
+}
 
-      unsigned long long waitTime = CURRENT_TIME;
-      while ((CURRENT_TIME - waitTime <= 1000) && IS_REG_IN_ON(REG_IN_BAT_SENSE)) {
-        read_regs();
-        esp_task_wdt_reset();
-        vTaskDelay(pdMS_TO_TICKS(1));
-      }
-      REG_OFF(REG_BATT_OFF);
+static void psu_autostart_post(WebCommandType_t type) {
+  WebCommand_t cmd = {};
+  cmd.type = type;
+  cmd.source = FLOG_SRC_AUTO;
+  xQueueSend(xWebCommandQueue, &cmd, 0);
+}
 
-      psu_backup_engaged = false;
+// PSU-loss autostart (BatteryConfig_t.psu_autostart_*). Only acts with the
+// PSU backup enabled: without it the controller loses its supply together
+// with the PSU. Commands go through xWebCommandQueue like every other source,
+// so the usual start/stop gating applies. One start attempt per outage; the
+// PSU return stops only an engine this function started.
+static void psu_autostart_check(void) {
+  uint32_t now = uptime_ms();
+  bool enabled = g_battery_config.psu_autostart_enabled &&
+                 g_battery_config.psu_loss_backup_enabled;
+
+  if (IS_REG_IN_ON(REG_IN_PSU_SENSE)) {
+    psu_lost_since_ms = 0;
+    psu_outage_handled = false;
+    if (!enabled || !psu_autostarted) {
+      psu_back_since_ms = 0;
+      return;
     }
+    if (psu_back_since_ms == 0) psu_back_since_ms = now;
+    if (now - psu_back_since_ms >= g_battery_config.psu_autostop_delay_s * 1000UL) {
+      SDEBUG("[PSU] PSU back for ", g_battery_config.psu_autostop_delay_s, " s, stopping autostarted engine");
+      psu_autostarted = false;
+      psu_back_since_ms = 0;
+      psu_autostart_post(WEB_CMD_STOP);
+    }
+    return;
   }
 
-  psu_backup_prev_ext_power_ok = ext_power_ok_now;
+  psu_back_since_ms = 0;
+  if (psu_lost_since_ms == 0) psu_lost_since_ms = now;
+  if (!enabled || psu_outage_handled) return;
+  if (now - psu_lost_since_ms < g_battery_config.psu_autostart_delay_s * 1000UL) return;
+  if (!IS_CURRENT_STATE(STATE_IDLE) || !is_not_working() || safety_start_inhibited()) return;
+
+  SDEBUG("[PSU] PSU lost for ", g_battery_config.psu_autostart_delay_s, " s, starting with retry");
+  psu_outage_handled = true;
+  psu_autostarted = true;
+  psu_autostart_post(WEB_CMD_START_RETRY);
 }
 
 // uptime_ms() when the current engine session started (entered STATE_STARTED);
@@ -530,10 +563,9 @@ bool switch_STATE_IDLE(void) {
   afterRunPeriodTime = CURRENT_TIME;
   afterRunPeriod = true;
 
-  // If a start happened mid-outage, switch_STATE_STARTED()/process_STATE_RUNNING()
-  // already unconditionally cleared REG_BATT_FORCE (see psu_backup_check()'s
-  // comment) — nothing physical is left for us to release, so just drop the flag.
-  psu_backup_engaged = false;
+  // An engine stopped by any cause clears a previous autostart: the PSU
+  // return must not stop a later manual start.
+  psu_autostarted = false;
 
   return result;
 }
@@ -711,8 +743,6 @@ bool process_STATE_IDLE(void) {
     }
   }
 
-  psu_backup_check();
-
   // Safety: on battery-only supply (no PSU, no genset), shut the battery off
   // once bat_v has stayed <= threshold_shutdown_v continuously for
   // shutdown_persist_time_s, rather than on the first low reading — avoids
@@ -728,6 +758,9 @@ bool process_STATE_IDLE(void) {
         SDEBUG_CHARGING("[BAT] IDLE: SHUTDOWN — bat-only supply, bat=", dbg_fixed(bat_v, 3),
                "V <= shutdown_threshold=", dbg_fixed((double)g_battery_config.threshold_shutdown_v, 2),
                "V for ", low_elapsed_s, "s, disabling battery");
+        // Deliberate cut, bypassing battery_disconnect()'s backup guard: the
+        // backup would otherwise run the battery flat.
+        psu_backup_engaged = false;
         REG_OFF(REG_BATT_FORCE); // shutdown bat only supply
         REG_ON(REG_BATT_OFF);
         FramLogRecord r = {};
@@ -1113,8 +1146,12 @@ bool switch_STATE_STARTED(void) {
   // process_STATE_RUNNING(). Same for the general battery-dependency check
   // (manually-toggled choke/fuel pump) — otherwise this is the normal
   // unconditional cleanup (e.g. a stray force left on from periodic voltage
-  // measurement).
-  if (!choke_forced_battery && !battery_dependency_forced) {
+  // measurement). Not while the PSU backup holds it: without PSU the genset
+  // output may not be up yet, and the battery is the only supply.
+  if (g_battery_config.psu_loss_backup_enabled && !external_power_present()) {
+    psu_backup_engaged = true;
+  }
+  if (!choke_forced_battery && !battery_dependency_forced && !psu_backup_engaged) {
     REG_OFF_STATE(REG_BATT_FORCE);
     REG_ON_STATE(REG_BATT_OFF);
   }
@@ -1562,6 +1599,13 @@ void StateMachineTask(void *pvParameters) {
                     break;
                 case WEB_CMD_STOP:
                     flog_last_stop_req_ms = uptime_ms();
+                    // A stop from anyone but the autostart itself hands the
+                    // engine back to the operator: no auto stop on PSU return,
+                    // and no new autostart during the rest of this outage.
+                    if (web_cmd.source != FLOG_SRC_AUTO) {
+                        psu_autostarted = false;
+                        if (IS_REG_IN_OFF(REG_IN_PSU_SENSE)) psu_outage_handled = true;
+                    }
                     if (!is_not_working()) {
                         FramLogRecord r = {};
                         r.type = FLOG_EV_STOP_REQUEST;
@@ -1709,18 +1753,13 @@ void StateMachineTask(void *pvParameters) {
                 battery_dependency_forced = true;
             } else if (battery_dependency_forced && !battery_dependent_reg_on) {
                 SDEBUG("[BAT] releasing battery — CHOKE and FUEL_PUMP both off");
-                REG_OFF(REG_BATT_FORCE);
-                REG_ON(REG_BATT_OFF);
-                unsigned long long waitTime = CURRENT_TIME;
-                while ((CURRENT_TIME - waitTime <= 1000) && IS_REG_IN_ON(REG_IN_BAT_SENSE)) {
-                    read_regs();
-                    esp_task_wdt_reset();
-                    vTaskDelay(pdMS_TO_TICKS(1));
-                }
-                REG_OFF(REG_BATT_OFF);
                 battery_dependency_forced = false;
+                if (!psu_backup_engaged) battery_disconnect();
             }
         }
+
+        psu_backup_check();
+        psu_autostart_check();
 
         // Safety: hardware protection inputs (overheat/oil/overload) force a
         // stop while the engine is running — these normally kill the engine

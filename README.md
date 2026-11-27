@@ -95,6 +95,63 @@ flash to real hardware and exercise it over serial/HTTP. This firmware
 drives a running internal-combustion generator; treat changes to the state
 machine or safety-limit logic accordingly.
 
+## Load and soak testing
+
+`stress_test.py` (repo root, Python 3 standard library only) loads a running
+controller over HTTP and WebSocket and reports whether it survived. Run it
+against a test unit, not a controller that is driving a real generator.
+
+```sh
+./stress_test.py [host] --profile soak --ws-mute 1    # 8 h, moderate load
+./stress_test.py [host] --profile burst               # 10 min, saturating
+```
+
+`host` defaults to the repo-root `host` file. Every profile value can be
+overridden: `--duration`, `--http-workers`, `--http-delay`, `--ws-normal`,
+`--ws-churn`, `--ws-mute`, `--churn-period`.
+
+What it does:
+- **HTTP workers** issue a weighted mix of read-only GETs: `/log`, filtered
+  `/log?group=maint|alarm&count=50` (up to 400 FRAM reads per request),
+  `/metrics`, and large static files.
+- **WebSocket clients** come in three kinds: `normal` stays connected,
+  `churn` reconnects every `--churn-period` seconds, and `mute` never answers
+  pings, so the server's heartbeat has to drop it. No client ever sends a
+  text frame, because a bare number sent over `/ws` toggles a relay.
+- **A monitor** reads new journal events every 30 s and prints a status line
+  with free heap, request count and WebSocket frame count.
+
+A long run should not suspend the host machine, and its output belongs in a
+file:
+
+```sh
+systemd-inhibit --what=sleep:idle --why="soak test" \
+  nohup ./stress_test.py <host> --profile soak --ws-mute 1 \
+  > soak-$(date +%Y%m%d-%H%M).log 2>&1 &
+tail -f soak-*.log
+```
+
+`kill -INT <pid>` stops a run early and still prints the report; a plain
+`kill` does not. Do not start a run within 10 minutes of an OTA update: a
+reboot inside the confirmation window rolls the new image back.
+
+The report lists per-endpoint latency (p50/p99/max), WebSocket counters,
+free-heap drift between the first and last 10 % of samples, and any new
+`boot`, `panic_summary`, `task_wdt` or `i2c_stuck` journal events. The last
+line is the verdict:
+
+| Verdict | Meaning | Exit status |
+|---|---|---|
+| `PASS` | no reboot, no crash event | 0 |
+| `FAIL` | new `boot` event, WebSocket `UPTIME` went backwards, or a crash event | 1 |
+| `INCONCLUSIVE` | the final journal read failed, or no WebSocket report arrived | 2 |
+
+A free-heap drop of more than 8 KB adds a `WARN` to the verdict. HTTP
+timeouts never count as a reboot, since network trouble on the client side
+looks the same. `burst` saturates the single-threaded HTTP server, so
+multi-second latency and delayed WebSocket reports are expected there; judge
+it on reboots and crash events only.
+
 ## Interfaces
 
 - **HTTP + WebSocket**: `http://<host>/` (dashboard), `ws://<host>/ws`

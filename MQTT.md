@@ -118,7 +118,8 @@ Published **every 5 seconds** or **immediately on generator state change**. Payl
 |---|---|---|
 | `state` | string | Human-readable generator state (see table below) |
 | `state_id` | int | Numeric state ID (enum value) |
-| `is_running` | 0/1 | `1` when state is `running` (`STATE_RUNNING`) |
+| `is_running` | 0/1 | `1` when state is `running` (`STATE_RUNNING`); `0` during `cooldown`, although the engine is still running |
+| `cooldown_left` | int | Seconds until the cooldown cap (`timing.cooldown_max_s`) while state is `cooldown`, else `0`. An upper bound: cooldown ends earlier once the head temperature is at or below `timing.cooldown_temp_c` |
 | `rpm` | int | Engine RPM (PCNT tachometer, smoothed) |
 | `freq` | float | AC output frequency, Hz (MCP39F511A power meter) |
 | `bat_v` | float | Battery voltage, V (INA233 / ADC) |
@@ -156,8 +157,11 @@ Published **every 5 seconds** or **immediately on generator state change**. Payl
 | `started` | 11 | Engine running, warming up |
 | `running` | 12 | Engine running at operating speed, load connected |
 | `error` | 13 | Error / fault state |
+| `cooldown` | 14 | Engine running unloaded after a stop request, until the head cools (see below) |
 
-Note: no external MQTT consumers depend on these numbers yet — `state_id` was renumbered on 2026-07-23 to keep `STATE_ERROR` last/max and group the load-relay-off phase next to the other stopping states. If a real consumer starts depending on `state_id`, stop renumbering and only append new states at the end.
+`state_id` values are fixed: Home Assistant (`ha/`) and the display panel (ESP-NOW state packet) depend on them. New states are appended at the end only.
+
+**Cooldown** (`timing.cooldown_*` in `/wifi.json`, off by default): a stop from `running` that is not a safety stop goes `stopping` (load off, ~500 ms) → `cooldown` → `stopping`, provided the head temperature is above `cooldown_temp_c`. The engine runs with load relay and ECO off for at least `cooldown_min_s`, then until the head is at or below `cooldown_temp_c` (with no head reading, until `cooldown_max_s`), and never longer than `cooldown_max_s`. During `cooldown`: a second `stop` stops at once; `start`/`start_retry` returns to `running` (load relay back per `limits.auto_load_relay_on_run`, no new `start_ok`) and logs `cooldown_cancel`; a protection input, a temperature limit or the engine dying stops at once and is logged as `emergency_stop`.
 
 ---
 
@@ -172,7 +176,7 @@ Every record written to the FRAM event journal is mirrored here (QoS 0, retain `
  "attempts":1,"detected":0,"head_temp":21.5,"bat_v":12.61,"crank_ms":2450}
 ```
 
-Event `type` values: `boot`, `time_sync`, `start_request`, `start_ok`, `start_fail`, `stop_request`, `stopped`, `emergency_stop` (reason: `oil`/`overheat`/`overload`/`stalled`), `charge_start`, `charge_stop` (reason: `threshold`/`psu_lost`/`manual`/`engine_start`), `error`, `task_wdt`, `fw_update`, `i2c_stuck`, `sensor_fail`, `maintenance`.
+Event `type` values: `boot`, `time_sync`, `start_request`, `start_ok`, `start_fail`, `stop_request`, `stopped` (`cooldown_s`: length of the cooldown run before it, 0 if none), `cooldown_cancel` (`source`, `elapsed_s`, `head_temp`), `emergency_stop` (reason: `oil`/`overheat`/`overload`/`stalled`), `charge_start`, `charge_stop` (reason: `threshold`/`psu_lost`/`manual`/`engine_start`), `error`, `task_wdt`, `fw_update`, `i2c_stuck`, `sensor_fail`, `maintenance`.
 
 `boot` is logged once at the start of every `setup()`, before anything else can fail — `reset_reason` is the raw `esp_reset_reason_t` value (`esp_reset_reason()`, cast to `uint8_t`): `0`=unknown, `1`=power-on, `2`=external pin, `3`=`esp_restart()`/clean software reboot (what a normal OTA reboot reports), `4`=panic/crash (`abort()`, an uncaught exception, an `ESP_ERROR_CHECK()` failure, ...), `5`=interrupt watchdog, `6`=task watchdog, `7`=other watchdog, `8`=deep-sleep wake, `9`=brownout — see `resetReasonName()` in the `.ino` for the same mapping to human-readable names (used in the OLED status screen, not this journal). `4` (panic) here is the fastest way to notice something aborted on the previous boot even without a `task_wdt` record (e.g. an `ESP_ERROR_CHECK()` failure, which isn't a watchdog trip and gets no `task_wdt` record of its own) — cross-check against `GET /coredump`/`decode_crash.sh` for the actual backtrace:
 

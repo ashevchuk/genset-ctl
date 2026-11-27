@@ -41,6 +41,7 @@ enum : uint8_t {
     FLOG_EV_STOP_REQUEST   = 13,
     FLOG_EV_STOPPED        = 14,
     FLOG_EV_EMERGENCY_STOP = 15,
+    FLOG_EV_COOLDOWN_CANCEL = 16,  // START during STATE_COOLDOWN put the load back on
 
     FLOG_EV_CHARGE_START   = 20,
     FLOG_EV_CHARGE_STOP    = 21,
@@ -119,7 +120,9 @@ typedef struct __attribute__((packed)) {
         struct __attribute__((packed)) { uint8_t attempts; uint8_t detected;            // detected=1: found running w/o start sequence
                                           float head_temp; float bat_v; uint32_t crank_ms; } start_ok;
         struct __attribute__((packed)) { uint8_t attempts; } start_fail;
-        struct __attribute__((packed)) { uint32_t run_seconds; float head_temp; float fuel_l; } stopped;
+        struct __attribute__((packed)) { uint32_t run_seconds; float head_temp; float fuel_l;
+                                          uint16_t cooldown_s; } stopped;               // cooldown_s: 0 on records older than STATE_COOLDOWN
+        struct __attribute__((packed)) { uint8_t source; uint16_t elapsed_s; float head_temp; } cooldown_cancel;
         struct __attribute__((packed)) { uint8_t reason; uint8_t inputs;                 // raw 74HC165 snapshot
                                           float head_temp; uint32_t run_seconds; } emergency;
         struct __attribute__((packed)) { float bat_v; uint8_t auto_started; } charge_start;

@@ -59,7 +59,7 @@ Check the controller's actual value first (`GET http://<controller>/api/wifi/con
 
 | Kind | Examples |
 |---|---|
-| Sensors | state, RPM, frequency, battery, fuel, head temp, Vrms, power, RSSI, heap, lifetime hours/starts |
+| Sensors | state, cooldown left, RPM, frequency, battery, fuel, head temp, Vrms, power, RSSI, heap, lifetime hours/starts |
 | Binary sensors | running, AC output, gen sense, oil fault, overload |
 | Switches | choke, fuel pump, ECO, load relay, charger |
 | Buttons | start, start+retry, stop; maintenance record (oil / spark / filters / valves / other) |
@@ -81,6 +81,7 @@ All entities share one device (`Generator`). Home Assistant's auto-generated das
 - **Start / Start retry** are unauthenticated MQTT buttons — treat broker ACL and network trust the same as the web UI.
 - Manual register switches (`choke`, `fuel_pump`, …) bypass high-level start sequencing except `REG_START`, which MQTT cannot command (same as HTTP `/reg`).
 - Prefer **Start** / **Stop** for normal operation; use register switches only when you know the state machine implications.
+- With cooldown enabled on the controller, **Stop** from running may leave the engine running unloaded for a while (state `cooldown`, `binary_sensor.gen_ctl_running` off). A second **Stop** stops it at once, **Start** puts the load back on. An automation that sends `stop` twice in a row therefore skips the cooldown.
 
 ## Quick test
 

@@ -155,7 +155,7 @@ Values use the same sources and units as `ReportTask`'s WS `value` section.
 |---|---|---|
 | `magic` | `uint8_t` | `0xE5` |
 | `proto_version` | `uint8_t` | `3` |
-| `state_id` | `uint8_t` | `state` enum (`rtos_config.h`); display maps it back to `state_name()` strings |
+| `state_id` | `uint8_t` | `state` enum (`rtos_config.h`); display maps it back to `state_name()` strings (`STATE_NAMES`, `display/esp_now_client.cpp` — extend it when a state is appended). `COOLDOWN_LEFT` is not carried, so over ESP-NOW the panel shows `COOLING` without seconds |
 | `flags` | `uint8_t` | bit 0 = `!is_not_working()` (`switch.run`) |
 | `reg_inputs` | `uint8_t` | raw `shift_reg_in` |
 | `reg_outputs` | `uint16_t` | raw `shift_reg_outputs` |

@@ -8,6 +8,7 @@
       { "href": "/files", "label": "Files" }
     ],
     "cards": [
+      { "id": "STATE_TEXT", "label": "State" },
       { "id": "TIME", "label": "Timestamp" },
       { "id": "UPTIME", "label": "Uptime" },
       { "id": "ENGINE_HOURS", "label": "Engine hours" },

@@ -44,6 +44,19 @@ mqtt:
       icon: mdi:numeric
       device: *gen_ctl_device
 
+    # Upper bound: cooldown also ends early once the head has cooled down.
+    # 0 outside the "cooldown" state.
+    - name: "Generator Cooldown Left"
+      unique_id: gen_ctl_cooldown_left
+      default_entity_id: sensor.gen_ctl_cooldown_left
+      state_topic: "gen-ctl/state"
+      value_template: "{{ value_json.cooldown_left | default(0) }}"
+      unit_of_measurement: "s"
+      device_class: duration
+      expire_after: 30
+      icon: mdi:fan-clock
+      device: *gen_ctl_device
+
     - name: "Generator RPM"
       unique_id: gen_ctl_rpm
       default_entity_id: sensor.gen_ctl_rpm

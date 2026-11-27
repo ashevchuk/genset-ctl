@@ -1221,6 +1221,7 @@ void ui_init(void) {
 // Without value.STATE (controller not yet updated) fall back to the old
 // run/stop pair, which only knows idle vs everything else.
 static void gen_state_label(const GenData &d, const char **text, lv_color_t *col) {
+    static char cooldown_buf[20];
     const char *s = d.state;
     if (s[0] == '\0') {
         if (d.running)      { *text = "RUNNING";  *col = COL_GREEN; }
@@ -1230,6 +1231,14 @@ static void gen_state_label(const GenData &d, const char **text, lv_color_t *col
     }
     if (!strcmp(s, "running")) {
         *text = "RUNNING"; *col = COL_GREEN;
+    } else if (!strcmp(s, "cooldown")) {
+        if (d.cooldown_left) {
+            snprintf(cooldown_buf, sizeof(cooldown_buf), "COOLING %us", (unsigned)d.cooldown_left);
+            *text = cooldown_buf;
+        } else {
+            *text = "COOLING";
+        }
+        *col = COL_BLUE;
     } else if (!strcmp(s, "starting") || !strcmp(s, "starting_retry")) {
         *text = "STARTING"; *col = COL_ORANGE;
     } else if (!strcmp(s, "started")) {
@@ -1312,9 +1321,11 @@ void ui_update(const GenData &d) {
         lv_chart_set_next_value(chart_alt,  ser_alt,  (lv_coord_t)d.alternator_temp);
     }
 
-    // Block start/retry when generator is running (only relevant when WS connected)
+    // Block start/retry when generator is running (only relevant when WS
+    // connected). During cooldown the controller takes Start as "back to
+    // running", so the buttons stay usable there.
     if (s_ws_connected) {
-        if (d.running) {
+        if (d.running && strcmp(d.state, "cooldown") != 0) {
             lv_obj_add_state(btn_start, LV_STATE_DISABLED);
             lv_obj_add_state(btn_retry, LV_STATE_DISABLED);
         } else {

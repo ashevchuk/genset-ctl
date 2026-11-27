@@ -252,6 +252,7 @@ void ReportTask(void *pvParameters) {
             uint8_t inputs;
             uint16_t outputs;
             state cur_state;
+            uint16_t cooldown_left;
 
             portENTER_CRITICAL(&g_state_spinlock);
             sensors = g_state.sensors;
@@ -259,6 +260,7 @@ void ReportTask(void *pvParameters) {
             inputs = g_state.shift_reg_inputs;
             outputs = g_state.shift_reg_outputs;
             cur_state = g_state.current_state;
+            cooldown_left = g_state.cooldown_left_s;
             portEXIT_CRITICAL(&g_state_spinlock);
 
             // Build JSON using ArduinoJson
@@ -283,6 +285,16 @@ void ReportTask(void *pvParameters) {
             // web UI reads; the display uses STATE for the finer label.
             JsonObject val = doc["value"].to<JsonObject>();
             val["STATE"] = state_name(cur_state);
+            // STATE_TEXT is for display as-is (web status card); COOLDOWN_LEFT
+            // is the upper bound, cooldown can end earlier once the head cools.
+            val["COOLDOWN_LEFT"] = cooldown_left;
+            static char state_text_buf[40];
+            if (cur_state == STATE_COOLDOWN) {
+                snprintf(state_text_buf, sizeof(state_text_buf), "cooldown (max %us)", (unsigned)cooldown_left);
+            } else {
+                snprintf(state_text_buf, sizeof(state_text_buf), "%s", state_name(cur_state));
+            }
+            val["STATE_TEXT"] = (const char *)state_text_buf;
             val["ADC0_0"] = serialized(ws_fmt_num(adc_1_0.get(), 1));
             val["ADC0_1"] = serialized(ws_fmt_num(adc_1_1.get(), 1));
             val["ADC0_2"] = serialized(ws_fmt_num(adc_1_2.get(), 1));

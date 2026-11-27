@@ -117,7 +117,7 @@ static_assert(ESPNOW_JRN_MAX_EVENTS <= 32, "s_jrn_have is a 32-bit mask");
 static const char *const STATE_NAMES[] = {
     "init", "idle", "stopping", "stopping", "stopping_retry", "stopped",
     "stopped_retry", "starting", "starting", "starting_retry",
-    "starting_retry", "started", "running", "error",
+    "starting_retry", "started", "running", "error", "cooldown",
 };
 
 // Controller shift-register bits not already named in ws_client.h.
@@ -267,6 +267,7 @@ static void on_state(const EspNowStatePkt &p, int rssi) {
     g_gen.running         = working;
     g_gen.stopped         = !working;
     strlcpy(g_gen.state, st, sizeof(g_gen.state));
+    g_gen.cooldown_left   = 0;
     g_gen.choke           = reg_bit(p.reg_outputs, REG_CHOKE);
     g_gen.fuel_pump       = reg_bit(p.reg_outputs, REG_FUEL_PUMP);
     g_gen.eco_mode        = reg_bit(p.reg_outputs, REG_ECO_MODE);

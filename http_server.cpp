@@ -837,6 +837,10 @@ static esp_err_t wifi_save_handler(httpd_req_t *req) {
     timing_obj["running_time_ms"]          = atol(p("timing_running_time").c_str());
     timing_obj["load_relay_stop_delay_ms"] = atol(p("timing_load_relay_stop_delay").c_str());
     timing_obj["after_run_period_ms"]      = atol(p("timing_after_run_period").c_str());
+    timing_obj["cooldown_enabled"]         = (atoi(p("timing_cooldown_enabled").c_str()) != 0);
+    timing_obj["cooldown_temp_c"]          = atof(p("timing_cooldown_temp").c_str());
+    timing_obj["cooldown_min_s"]           = atol(p("timing_cooldown_min").c_str());
+    timing_obj["cooldown_max_s"]           = atol(p("timing_cooldown_max").c_str());
 
     JsonObject battery_obj = doc["battery"].to<JsonObject>();
     battery_obj["threshold_start_charge_v"] = atof(p("bat_threshold_start_charge").c_str());

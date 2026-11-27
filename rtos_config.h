@@ -159,8 +159,9 @@ typedef struct {
 // Generator state machine states. Moved here from the main .cpp (2026-09-24,
 // during the OLED-menu extraction) so a separate translation unit
 // (oled_menu.cpp) can declare `state` locals and read g_state below —
-// STATE_ERROR is kept last/max deliberately, see CLAUDE.md's state-machine
-// section for why (state_id in MQTT/HTTP JSON).
+// state_id in MQTT/HTTP JSON and the ESP-NOW state packet is this enum's
+// numeric value, and Home Assistant and the display panel depend on it, so
+// new states are appended at the end only.
 typedef enum state {
   STATE_INIT = 0,
   STATE_IDLE,
@@ -175,7 +176,8 @@ typedef enum state {
   STATE_STARTING_RETRY_TRY,
   STATE_STARTED,
   STATE_RUNNING,
-  STATE_ERROR
+  STATE_ERROR,
+  STATE_COOLDOWN   // engine runs unloaded after a stop request until the head cools
 } state;
 
 // Shared state/sensor cache — refreshed by I2CTask/PowerMeterTask/
@@ -187,6 +189,7 @@ typedef struct {
     volatile state current_state;
     volatile state previous_state;
     volatile uint32_t state_entry_time;
+    volatile uint16_t cooldown_left_s;  // seconds until STATE_COOLDOWN's max_s cap; 0 outside it
 
     // Latest sensor data
     SensorData_t sensors;

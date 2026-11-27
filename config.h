@@ -33,6 +33,10 @@ struct TimingConfig_t {
     uint32_t running_time_ms;          // time allotted to reach running RPM (was RUNNING_TIME)
     uint32_t load_relay_stop_delay_ms; // load relay settle time before ignition cut (was LOAD_RELAY_STOP_DELAY)
     uint32_t after_run_period_ms;      // fast battery-read window after the engine stops (was AFTER_RUN_PERIOD_TIME)
+    bool     cooldown_enabled;         // run unloaded after a normal stop from RUNNING while the head is hot
+    float    cooldown_temp_c;          // head_temp above which cooldown starts, and at/below which it ends
+    uint32_t cooldown_min_s;           // minimum cooldown run before the temperature may end it
+    uint32_t cooldown_max_s;           // hard cap on the cooldown run
 };
 extern TimingConfig_t g_timing_config;
 

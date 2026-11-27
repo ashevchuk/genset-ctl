@@ -99,6 +99,7 @@ static void onWSEvent(WStype_t type, uint8_t *payload, size_t length) {
             g_gen.maint_due_mask = (uint8_t)(val["MAINT_DUE_MASK"] | 0);
             const char *st = val["STATE"] | "";
             strlcpy(g_gen.state, st, sizeof(g_gen.state));
+            g_gen.cooldown_left  = (uint16_t)(val["COOLDOWN_LEFT"] | 0);
         }
         if (!dt.isNull()) {
             g_gen.uptime = dt["UPTIME"] | (uint32_t)0;

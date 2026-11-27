@@ -19,6 +19,13 @@ views:
         entities:
           - entity: sensor.gen_ctl_state
             name: State
+          - type: conditional
+            conditions:
+              - entity: sensor.gen_ctl_state
+                state: cooldown
+            row:
+              entity: sensor.gen_ctl_cooldown_left
+              name: Cooldown left (max)
           - entity: binary_sensor.gen_ctl_running
             name: Running
           - entity: button.gen_ctl_start

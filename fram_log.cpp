@@ -816,6 +816,7 @@ const char *fram_log_type_name(uint8_t type) {
         case FLOG_EV_STOP_REQUEST:   return "stop_request";
         case FLOG_EV_STOPPED:        return "stopped";
         case FLOG_EV_EMERGENCY_STOP: return "emergency_stop";
+        case FLOG_EV_COOLDOWN_CANCEL: return "cooldown_cancel";
         case FLOG_EV_CHARGE_START:   return "charge_start";
         case FLOG_EV_CHARGE_STOP:    return "charge_stop";
         case FLOG_EV_ERROR:          return "error";
@@ -835,6 +836,7 @@ const char *fram_log_group_name(uint8_t type) {
         case FLOG_EV_START_OK:
         case FLOG_EV_STOP_REQUEST:
         case FLOG_EV_STOPPED:
+        case FLOG_EV_COOLDOWN_CANCEL:
             return "engine";
         case FLOG_EV_START_FAIL:
         case FLOG_EV_EMERGENCY_STOP:
@@ -1001,9 +1003,15 @@ int fram_log_record_json(const FramLogRecord *r, char *buf, size_t n) {
             APPEND(",\"attempts\":%u", r->d.start_fail.attempts);
             break;
         case FLOG_EV_STOPPED:
-            APPEND(",\"run_seconds\":%lu,\"head_temp\":%.1f,\"fuel_l\":%.1f",
+            APPEND(",\"run_seconds\":%lu,\"head_temp\":%.1f,\"fuel_l\":%.1f,\"cooldown_s\":%u",
                    (unsigned long)r->d.stopped.run_seconds,
-                   (double)r->d.stopped.head_temp, (double)r->d.stopped.fuel_l);
+                   (double)r->d.stopped.head_temp, (double)r->d.stopped.fuel_l,
+                   r->d.stopped.cooldown_s);
+            break;
+        case FLOG_EV_COOLDOWN_CANCEL:
+            APPEND(",\"source\":\"%s\",\"elapsed_s\":%u,\"head_temp\":%.1f",
+                   source_name(r->d.cooldown_cancel.source), r->d.cooldown_cancel.elapsed_s,
+                   (double)r->d.cooldown_cancel.head_temp);
             break;
         case FLOG_EV_EMERGENCY_STOP:
             APPEND(",\"reason\":\"%s\",\"inputs\":%u,\"head_temp\":%.1f,"

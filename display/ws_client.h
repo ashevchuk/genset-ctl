@@ -20,6 +20,9 @@ struct GenData {
     bool running;
     bool stopped;
     char state[20];
+    // Upper bound in seconds while state is "cooldown" (value.COOLDOWN_LEFT),
+    // 0 otherwise or when the source (ESP-NOW) does not carry it.
+    uint16_t cooldown_left;
 
     // Outputs
     bool choke;

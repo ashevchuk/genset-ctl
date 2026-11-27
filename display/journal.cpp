@@ -127,9 +127,22 @@ static void fill_entry(JsonObjectConst ev, uint32_t now_ts, JournalEntry *e) {
         strlcpy(e->type, "STOPPED", sizeof(e->type));
         e->sev = JSEV_STOP;
         fmt_dur(ev["run_seconds"] | 0UL, dur, sizeof(dur));
-        snprintf(e->text, sizeof(e->text), "ran %s, %.0f°C, %.1fL left",
-                 dur, (double)(ev["head_temp"] | 0.0f),
-                 (double)(ev["fuel_l"] | 0.0f));
+        unsigned cooldown_s = ev["cooldown_s"] | 0U;
+        if (cooldown_s) {
+            snprintf(e->text, sizeof(e->text), "ran %s (cool %us), %.0f°C, %.1fL left",
+                     dur, cooldown_s, (double)(ev["head_temp"] | 0.0f),
+                     (double)(ev["fuel_l"] | 0.0f));
+        } else {
+            snprintf(e->text, sizeof(e->text), "ran %s, %.0f°C, %.1fL left",
+                     dur, (double)(ev["head_temp"] | 0.0f),
+                     (double)(ev["fuel_l"] | 0.0f));
+        }
+    } else if (strcmp(type, "cooldown_cancel") == 0) {
+        strlcpy(e->type, "COOL OFF", sizeof(e->type));
+        e->sev = JSEV_START;
+        fmt_dur(ev["elapsed_s"] | 0UL, dur, sizeof(dur));
+        snprintf(e->text, sizeof(e->text), "back to running after %s, from %s",
+                 dur, (const char *)(ev["source"] | "?"));
     } else if (strcmp(type, "emergency_stop") == 0) {
         strlcpy(e->type, "EMERG", sizeof(e->type));
         e->sev = JSEV_ALARM;

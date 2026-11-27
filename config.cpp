@@ -25,6 +25,10 @@ TimingConfig_t g_timing_config = {
     .running_time_ms          = 5000,
     .load_relay_stop_delay_ms = 500,
     .after_run_period_ms      = 1000UL * 60 * 5,
+    .cooldown_enabled         = false,
+    .cooldown_temp_c          = 140.0f,
+    .cooldown_min_s           = 30,
+    .cooldown_max_s           = 90,
 };
 
 BatteryConfig_t g_battery_config = {
@@ -87,6 +91,10 @@ void timing_config_load(const JsonDocument &doc) {
     g_timing_config.running_time_ms          = t["running_time_ms"]         | 5000;
     g_timing_config.load_relay_stop_delay_ms = t["load_relay_stop_delay_ms"] | 500;
     g_timing_config.after_run_period_ms      = t["after_run_period_ms"]      | (1000UL * 60 * 5);
+    g_timing_config.cooldown_enabled         = t["cooldown_enabled"]         | false;
+    g_timing_config.cooldown_temp_c          = t["cooldown_temp_c"]          | 140.0f;
+    g_timing_config.cooldown_min_s           = t["cooldown_min_s"]           | 30;
+    g_timing_config.cooldown_max_s           = t["cooldown_max_s"]           | 90;
 }
 
 // Load battery voltage-threshold / read-period config from wifi.json document.

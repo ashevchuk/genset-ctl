@@ -48,6 +48,9 @@ static bool choke_forced_battery = false;
 static bool psu_backup_engaged = false;
 static uint32_t flog_last_stop_req_ms = 0;
 static bool flog_pending_temp_limit_stop = false;
+// Length of the last cooldown run of the current engine session, for the
+// FLOG_EV_STOPPED record; 0 when the session had none.
+static uint32_t flog_cooldown_s = 0;
 
 static unsigned long long afterRunPeriodTime = 0;
 static bool               afterRunPeriod = false;
@@ -58,6 +61,8 @@ static unsigned long long startTry = 0;
 static unsigned long long stoppingTime = 0;
 static unsigned long long loadOffTime = 0;
 static bool               stoppingToRetry = false;
+static bool               cooldownPending = false;
+static unsigned long long cooldownTime = 0;
 static unsigned long long runningTime = 0;
 static bool     battery_dependency_forced = false;
 static uint32_t fuel_pump_last_rise_ms = 0;
@@ -426,10 +431,14 @@ void flog_on_transition(state old_s, state new_s) {
       r.type = FLOG_EV_START_FAIL;
       r.d.start_fail.attempts = (uint8_t)startTry;
       fram_log_event(&r);
-    } else if ((old_s == STATE_RUNNING || old_s == STATE_STARTED) &&
-               flog_session_start_ms != 0 &&
-               uptime_ms() - flog_last_stop_req_ms > 10000) {
-      // Engine died without a stop command — classify by protection inputs
+    } else if (flog_session_start_ms != 0 &&
+               (old_s == STATE_COOLDOWN ||
+                ((old_s == STATE_RUNNING || old_s == STATE_STARTED) &&
+                 uptime_ms() - flog_last_stop_req_ms > 10000))) {
+      // Engine died without a stop command — classify by protection inputs.
+      // From STATE_COOLDOWN a stop request is always recent (it started the
+      // cooldown), and every way back into LOAD_OFF from there is a safety
+      // stop or the engine dying, so the 10 s window does not apply.
       uint8_t inputs;
       portENTER_CRITICAL(&g_state_spinlock);
       inputs = g_state.shift_reg_inputs;
@@ -449,6 +458,10 @@ void flog_on_transition(state old_s, state new_s) {
     flog_pending_temp_limit_stop = false;
     break;
 
+  case STATE_RUNNING:
+    if (old_s == STATE_COOLDOWN) flog_cooldown_s = 0;
+    break;
+
   case STATE_STOPPED:
   case STATE_IDLE:
     // Unconditional, not just when a FLOG_EV_STOPPED gets logged below: this
@@ -461,13 +474,19 @@ void flog_on_transition(state old_s, state new_s) {
       r.d.stopped.run_seconds = (uptime_ms() - flog_session_start_ms) / 1000;
       r.d.stopped.head_temp = flog_head_temp();
       r.d.stopped.fuel_l = (float)fuel_level_from_adc(adc_2_0.get());
+      r.d.stopped.cooldown_s = (uint16_t)flog_cooldown_s;
       fram_log_event(&r);
       flog_session_start_ms = 0;
+      flog_cooldown_s = 0;
     }
     break;
 
   default:
     break;
+  }
+
+  if (old_s == STATE_COOLDOWN && new_s != STATE_RUNNING) {
+    flog_cooldown_s = (uint32_t)((CURRENT_TIME - cooldownTime) / 1000);
   }
 }
 
@@ -733,6 +752,51 @@ bool process_STATE_IDLE(void) {
   return result;
 }
 
+// Decided on entry to STATE_STOPPING_LOAD_OFF, while CURRENT_STATE is still
+// the state being left. Only a normal stop of a running engine qualifies: a
+// safety stop (protection input or temperature limit, the same conditions
+// safety_start_inhibited() checks) must cut the engine without delay.
+static bool cooldown_needed(void) {
+  if (!g_timing_config.cooldown_enabled) return false;
+  if (!IS_CURRENT_STATE(STATE_RUNNING) || !is_running()) return false;
+  if (safety_start_inhibited()) return false;
+  portENTER_CRITICAL(&g_state_spinlock);
+  bool  valid = g_state.sensors.head_temp_valid;
+  float t     = g_state.sensors.head_temp;
+  portEXIT_CRITICAL(&g_state_spinlock);
+  return valid && t > g_timing_config.cooldown_temp_c;
+}
+
+static bool cooldown_head_cooled(void) {
+  portENTER_CRITICAL(&g_state_spinlock);
+  bool  valid = g_state.sensors.head_temp_valid;
+  float t     = g_state.sensors.head_temp;
+  portEXIT_CRITICAL(&g_state_spinlock);
+  return valid && t <= g_timing_config.cooldown_temp_c;
+}
+
+static uint16_t cooldown_left_s(void) {
+  if (!IS_CURRENT_STATE(STATE_COOLDOWN)) return 0;
+  unsigned long long max_ms  = (unsigned long long)g_timing_config.cooldown_max_s * 1000;
+  unsigned long long elapsed = CURRENT_TIME - cooldownTime;
+  if (elapsed >= max_ms) return 0;
+  unsigned long long left_s = (max_ms - elapsed + 999) / 1000;
+  return left_s > UINT16_MAX ? UINT16_MAX : (uint16_t)left_s;
+}
+
+// START/START_RETRY while cooling down: the engine is still running, so go
+// straight back to RUNNING (which restores ECO and the load relay) instead
+// of a new start sequence, and without counting a new start.
+static void cooldown_resume(uint8_t source) {
+  FramLogRecord r = {};
+  r.type = FLOG_EV_COOLDOWN_CANCEL;
+  r.d.cooldown_cancel.source = source;
+  r.d.cooldown_cancel.elapsed_s = (uint16_t)((CURRENT_TIME - cooldownTime) / 1000);
+  r.d.cooldown_cancel.head_temp = flog_head_temp();
+  fram_log_event(&r);
+  STATE(STATE_RUNNING);
+}
+
 bool switch_STATE_STOPPING_LOAD_OFF(void) {
   bool result = true;
 
@@ -742,6 +806,7 @@ bool switch_STATE_STOPPING_LOAD_OFF(void) {
   // switch_state() hasn't updated CURRENT_STATE yet at this point, so this
   // still reads the state we're leaving.
   stoppingToRetry = IS_CURRENT_STATE(STATE_STARTING_RETRY_TRY);
+  cooldownPending = cooldown_needed();
 
   // Immediate write (not staged) — this must physically happen now, well
   // before ignition/choke are touched in STATE_STOPPING(_RETRY).
@@ -777,6 +842,25 @@ bool switch_STATE_STOPPING_LOAD_OFF(void) {
 }
 
 bool process_STATE_STOPPING_LOAD_OFF(void) {
+  return true;
+}
+
+bool switch_STATE_COOLDOWN(void) {
+  SDEBUG("Switch state COOLDOWN");
+
+  // LOAD_OFF already dropped the load relay, ECO and the starter. ECO is
+  // cleared again as a backstop; the load relay is left alone so a manual
+  // reconnect during cooldown stays possible.
+  REG_OFF_STATE(REG_ECO_MODE);
+  REG_OFF_STATE(REG_START);
+  REG_SYNC_STATE();
+
+  cooldownTime = CURRENT_TIME;
+
+  return true;
+}
+
+bool process_STATE_COOLDOWN(void) {
   return true;
 }
 
@@ -1178,11 +1262,15 @@ bool switch_state(const state new_state, const bool update_old) {
       result = SWITCH_STATE(STATE_STARTED);
       break;
     case STATE_RUNNING:
-      if (IS_CURRENT_STATE(STATE_STARTED))
+      if (IS_CURRENT_STATE(STATE_STARTED) || IS_CURRENT_STATE(STATE_COOLDOWN))
         result = SWITCH_STATE(STATE_RUNNING);
       break;
     case STATE_ERROR:
       result = SWITCH_STATE(STATE_ERROR);
+      break;
+    case STATE_COOLDOWN:
+      if (IS_CURRENT_STATE(STATE_STOPPING_LOAD_OFF))
+        result = SWITCH_STATE(STATE_COOLDOWN);
       break;
     }
 
@@ -1204,7 +1292,7 @@ bool process_current_state(void) {
   bool result = false;
 
   // A real switch, not an if-else chain, matching switch_state()'s own
-  // dispatch below (14 cases == the full `state` enum, rtos_config.h) —
+  // dispatch below (15 cases == the full `state` enum, rtos_config.h) —
   // deliberately no default: label, so -Wswitch (-Wall -Wextra) catches a
   // state added to the enum but never given a branch here, instead of
   // silently falling through to result=false the way the if-chain used to.
@@ -1250,6 +1338,9 @@ bool process_current_state(void) {
     break;
   case STATE_ERROR:
     result = PROCESS_STATE(STATE_ERROR);
+    break;
+  case STATE_COOLDOWN:
+    result = PROCESS_STATE(STATE_COOLDOWN);
     break;
   }
 
@@ -1327,7 +1418,22 @@ bool process_state_check(void) {
 
   else if (IS_CURRENT_STATE(STATE_STOPPING_LOAD_OFF)) {
     if (CURRENT_TIME - loadOffTime >= g_timing_config.load_relay_stop_delay_ms) {
-      result = STATE(stoppingToRetry ? STATE_STOPPING_RETRY : STATE_STOPPING);
+      state next = stoppingToRetry ? STATE_STOPPING_RETRY
+                 : cooldownPending ? STATE_COOLDOWN
+                 : STATE_STOPPING;
+      result = STATE(next);
+    }
+  }
+
+  else if (IS_CURRENT_STATE(STATE_COOLDOWN)) {
+    unsigned long long elapsed = CURRENT_TIME - cooldownTime;
+    if (!is_running()) {
+      result = STATE(STATE_STOPPING_LOAD_OFF);
+    } else if (elapsed >= (unsigned long long)g_timing_config.cooldown_max_s * 1000) {
+      result = STATE(STATE_STOPPING);
+    } else if (elapsed >= (unsigned long long)g_timing_config.cooldown_min_s * 1000 &&
+               cooldown_head_cooled()) {
+      result = STATE(STATE_STOPPING);
     }
   }
 
@@ -1432,7 +1538,9 @@ void StateMachineTask(void *pvParameters) {
         while (xQueueReceive(xWebCommandQueue, &web_cmd, 0) == pdTRUE) {
             switch (web_cmd.type) {
                 case WEB_CMD_START:
-                    if (is_not_working() && !safety_start_inhibited()) {
+                    if (IS_CURRENT_STATE(STATE_COOLDOWN)) {
+                        if (is_running() && !safety_start_inhibited()) cooldown_resume(web_cmd.source);
+                    } else if (is_not_working() && !safety_start_inhibited()) {
                         FramLogRecord r = {};
                         r.type = FLOG_EV_START_REQUEST;
                         r.d.request.source = web_cmd.source;
@@ -1441,7 +1549,9 @@ void StateMachineTask(void *pvParameters) {
                     }
                     break;
                 case WEB_CMD_START_RETRY:
-                    if (is_not_working() && !safety_start_inhibited()) {
+                    if (IS_CURRENT_STATE(STATE_COOLDOWN)) {
+                        if (is_running() && !safety_start_inhibited()) cooldown_resume(web_cmd.source);
+                    } else if (is_not_working() && !safety_start_inhibited()) {
                         FramLogRecord r = {};
                         r.type = FLOG_EV_START_REQUEST;
                         r.d.request.source = web_cmd.source;
@@ -1478,7 +1588,13 @@ void StateMachineTask(void *pvParameters) {
                     // still thinks it's idle — Stop must still drop the
                     // load and fire ignition-kill. Do not gate this on
                     // is_not_working().
-                    STATE(STATE_STOPPING_LOAD_OFF);
+                    // A second STOP during cooldown skips the rest of it:
+                    // the load is already off, so cut ignition now.
+                    if (IS_CURRENT_STATE(STATE_COOLDOWN)) {
+                        STATE(STATE_STOPPING);
+                    } else {
+                        STATE(STATE_STOPPING_LOAD_OFF);
+                    }
                     break;
                 case WEB_CMD_REG_TOGGLE:
                     if (web_cmd.reg < 16 && web_cmd.reg != REG_START) {
@@ -1584,7 +1700,7 @@ void StateMachineTask(void *pvParameters) {
         // settling-time wait — this only handles the general/manual case, and
         // the two are never allowed to release what the other one forced
         // (see switch_STATE_STARTED()/process_STATE_RUNNING()).
-        if (!IS_CURRENT_STATE(STATE_RUNNING)) {
+        if (!IS_CURRENT_STATE(STATE_RUNNING) && !IS_CURRENT_STATE(STATE_COOLDOWN)) {
             bool battery_dependent_reg_on = IS_REG_ON(REG_CHOKE) || IS_REG_ON(REG_FUEL_PUMP);
             if (battery_dependent_reg_on && IS_REG_IN_OFF(REG_IN_BAT_SENSE) &&
                 IS_REG_OFF(REG_BATT_FORCE)) {
@@ -1611,7 +1727,8 @@ void StateMachineTask(void *pvParameters) {
         // via their own hardware circuit too, but this guarantees the
         // firmware also reacts (load-off-first) rather than just logging it
         // after the fact once the engine has already died.
-        if ((IS_CURRENT_STATE(STATE_STARTED) || IS_CURRENT_STATE(STATE_RUNNING)) &&
+        if ((IS_CURRENT_STATE(STATE_STARTED) || IS_CURRENT_STATE(STATE_RUNNING) ||
+             IS_CURRENT_STATE(STATE_COOLDOWN)) &&
             (IS_REG_IN_ON(REG_IN_OVERHEAT) || IS_REG_IN_ON(REG_IN_OIL) ||
              IS_REG_IN_ON(REG_IN_OVERLOAD))) {
             SDEBUG("[SAFETY] protection input active — forcing stop");
@@ -1619,7 +1736,8 @@ void StateMachineTask(void *pvParameters) {
         }
 
         // Safety: configurable temperature limits (0 = disabled) force a stop
-        if (IS_CURRENT_STATE(STATE_STARTED) || IS_CURRENT_STATE(STATE_RUNNING)) {
+        if (IS_CURRENT_STATE(STATE_STARTED) || IS_CURRENT_STATE(STATE_RUNNING) ||
+            IS_CURRENT_STATE(STATE_COOLDOWN)) {
             bool over_limit =
                 (g_limits_config.temp_air_max      > 0.0f && (float)adc_1_1.get() >= g_limits_config.temp_air_max)      ||
                 (g_limits_config.temp_oil_max      > 0.0f && (float)adc_1_0.get() >= g_limits_config.temp_oil_max)      ||
@@ -1656,12 +1774,15 @@ void StateMachineTask(void *pvParameters) {
 
         // Feed engine-hours accumulation in the FRAM log task
         fram_log_set_running(IS_CURRENT_STATE(STATE_STARTED) ||
-                             IS_CURRENT_STATE(STATE_RUNNING));
+                             IS_CURRENT_STATE(STATE_RUNNING) ||
+                             IS_CURRENT_STATE(STATE_COOLDOWN));
 
         // Update shared state
+        uint16_t cooldown_left = cooldown_left_s();
         portENTER_CRITICAL(&g_state_spinlock);
         g_state.current_state = runtimeState;
         g_state.previous_state = prevState;
+        g_state.cooldown_left_s = cooldown_left;
         portEXIT_CRITICAL(&g_state_spinlock);
 
         // Feed watchdog
@@ -1688,6 +1809,7 @@ const char *state_name(state s) {
         case STATE_STARTED:            return "started";
         case STATE_RUNNING:            return "running";
         case STATE_ERROR:              return "error";
+        case STATE_COOLDOWN:           return "cooldown";
         default:                       return "unknown";
     }
 }

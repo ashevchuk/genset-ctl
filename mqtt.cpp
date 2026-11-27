@@ -252,8 +252,10 @@ void MqttTask(void *pvParameters) {
             PowerData_t power;
             uint8_t inputs;
             uint16_t outputs;
+            uint16_t cooldown_left;
             portENTER_CRITICAL(&g_state_spinlock);
             cur_state = g_state.current_state;
+            cooldown_left = g_state.cooldown_left_s;
             sensors   = g_state.sensors;
             power     = g_state.power;
             inputs    = g_state.shift_reg_inputs;
@@ -271,6 +273,7 @@ void MqttTask(void *pvParameters) {
                     "\"state\":\"%s\","
                     "\"state_id\":%d,"
                     "\"is_running\":%d,"
+                    "\"cooldown_left\":%u,"
                     "\"rpm\":%lu,"
                     "\"freq\":%.2f,"
                     "\"bat_v\":%.2f,"
@@ -296,6 +299,7 @@ void MqttTask(void *pvParameters) {
                     state_name(cur_state),
                     (int)cur_state,
                     (cur_state == STATE_RUNNING) ? 1 : 0,
+                    (unsigned)cooldown_left,
                     (unsigned long)sensors.rpm,
                     power.frequency,
                     (double)adc_2_1.get(),

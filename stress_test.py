@@ -73,7 +73,8 @@ class Stats:
     def __init__(self):
         self.lock = threading.Lock()
         self.http = {}            # name -> {"lat": [], "ok": n, "http_err": n, "net_err": n}
-        self.ws = dict(connects=0, connect_fail=0, drops=0, frames=0, pings=0, bad_frames=0)
+        self.ws = dict(connects=0, connect_fail=0, drops_normal=0, drops_churn=0, drops_mute=0,
+                       frames=0, pings=0, bad_frames=0)
         self.heap = []            # (t, free, min)
         self.uptime_last = None
         self.uptime_resets = []   # (t, previous, new)
@@ -244,7 +245,7 @@ def ws_worker(host, mode, churn_period, stop, stats):
                         message = b""
         except (OSError, ConnectionError):
             # A socket.timeout mid-frame lands here too; treat it as a drop.
-            stats.ws_count("drops")
+            stats.ws_count("drops_" + mode)
             stop.wait(1.0)
         finally:
             client.close()
@@ -275,7 +276,8 @@ def monitor(host, baseline, stop, stats):
             net = sum(s["net_err"] for s in stats.http.values())
         heap_s = f"free={heap[1]} min={heap[2]}" if heap else "no heap data yet"
         log(f"heap {heap_s} | http {reqs} reqs, {net} net errors | "
-            f"ws {ws['frames']} frames, {ws['drops']} drops")
+            f"ws {ws['frames']} frames, drops normal/churn/mute "
+            f"{ws['drops_normal']}/{ws['drops_churn']}/{ws['drops_mute']}")
     return seen
 
 
